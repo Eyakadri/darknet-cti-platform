@@ -1,0 +1,29 @@
+tor:
+  proxy_host: 127.0.0.1
+  proxy_port: 9050
+  control_port: 9051
+  control_password: null
+  circuit_refresh_interval: 300
+  max_circuit_failures: 5
+
+scrapy:
+  user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+  download_delay: 3
+  randomize_download_delay: 0.5
+  concurrent_requests: 1
+  retry_times: 3
+  retry_http_codes: [500, 502, 503, 504, 408, 429]
+
+redis:
+  host: 127.0.0.1
+  port: 6379
+  db: 0
+
+data_storage:
+  hash_algorithm: sha256
+
+target_sites:
+  - 'http://santat7kpllt6iyvqbr7q4amdv6dzrh6paatvyrzl7ry3zm72zigf4ad.onion/'
+  - 'https://dreadytofatroptsdj6io7l3xptbet6onoyno2yv7jicoxknyazubrad.onion'
+  - 'http://bestteermb42clir6ux7xm76d4jjodh3fpahjqgbddbmfrgp4skg2wqd.onion'
+  - 'http://bfdxjkv5e2z3ilrifzbnvxxvhbzsj67akjpj3zc6smzr4vv6oz565gyd.onion'

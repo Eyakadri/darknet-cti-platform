@@ -1,0 +1,7 @@
+elasticsearch:
+  hosts:
+    - 'http://localhost:9200'
+  index: 'cti_intelligence'
+
+logging:
+  level: 'INFO'

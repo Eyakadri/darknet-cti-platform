@@ -1,0 +1,79 @@
+# NLP configuration for CTI extraction
+
+language: "en"
+
+# SpaCy model(s) to load
+models:
+  - "en_core_web_sm"
+
+# Text preprocessing options
+lowercase: true
+lemmatize: true
+remove_stopwords: true
+
+
+# Custom regex-based CTI entities
+custom_entities:
+  CVE: "CVE-\\d{4}-\\d{4,7}"
+  IP_ADDRESS: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b"
+  IPV6_ADDRESS: "\\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\\b"
+  MD5_HASH: "\\b[a-fA-F0-9]{32}\\b"
+  SHA1_HASH: "\\b[a-fA-F0-9]{40}\\b"
+  SHA256_HASH: "\\b[a-fA-F0-9]{64}\\b"
+  BTC_ADDRESS: "\\b[13][a-km-zA-HJ-NP-Z1-9]{25,34}\\b"
+  ETH_ADDRESS: "\\b0x[a-fA-F0-9]{40}\\b"
+  DOMAIN: "\\b[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?)*\\.[a-zA-Z]{2,}\\b"
+  ONION_DOMAIN: "\\b[a-z2-7]{16,56}\\.onion\\b"
+  EMAIL: "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b"
+  URL: "https?://[^\\s<>\"']+|www\\.[^\\s<>\"']+|ftp://[^\\s<>\"']+"
+  EXECUTABLE: "\\b\\w+\\.(exe|dll|bat|cmd|scr|vbs|js|jar|apk|dex)\\b"
+
+# Malware families
+malware_families:
+  - ransomware
+  - trojan
+  - botnet
+  - rootkit
+  - keylogger
+  - spyware
+  - adware
+  - worm
+  - virus
+  - backdoor
+  - rat
+  - stealer
+  - miner
+  - lockbit
+  - conti
+  - ryuk
+  - maze
+  - sodinokibi
+  - revil
+  - darkside
+  - emotet
+  - trickbot
+  - qakbot
+  - dridex
+  - zeus
+  - mirai
+  - gh0st
+
+# Threat actor groups
+threat_actors:
+  - apt1
+  - apt28
+  - apt29
+  - apt32
+  - apt34
+  - apt40
+  - lazarus
+  - carbanak
+  - fin7
+  - fin8
+  - cozy bear
+  - fancy bear
+  - equation group
+  - shadow brokers
+  - dark halo
+  - nobelium
+  - hafnium
