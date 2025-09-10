@@ -7,7 +7,7 @@ tor:
   max_circuit_failures: 5
 
 scrapy:
-  user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+  user_agent: 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:53.0) Gecko/20100101 Firefox/53.0'
   download_delay: 3
   randomize_download_delay: 0.5
   concurrent_requests: 1
@@ -23,7 +23,44 @@ data_storage:
   hash_algorithm: sha256
 
 target_sites:
-  - 'http://santat7kpllt6iyvqbr7q4amdv6dzrh6paatvyrzl7ry3zm72zigf4ad.onion/'
-  - 'https://dreadytofatroptsdj6io7l3xptbet6onoyno2yv7jicoxknyazubrad.onion'
-  - 'http://bestteermb42clir6ux7xm76d4jjodh3fpahjqgbddbmfrgp4skg2wqd.onion'
-  - 'http://bfdxjkv5e2z3ilrifzbnvxxvhbzsj67akjpj3zc6smzr4vv6oz565gyd.onion'
+  - name: "CL0P^_- LEAKS"
+    url: "http://santat7kpllt6iyvqbr7q4amdv6dzrh6paatvyrzl7ry3zm72zigf4ad.onion/"
+    category: "data_leak_site"
+    use_selenium: true
+    rules:
+      # On this site, we want to find links that lead to the individual company leak pages.
+      follow_links: "h2.post-title a" # Placeholder selector for post titles
+      post_title: "h1.entry-title"
+      post_author: ".author-name" # This site may not have authors
+      post_content: ".entry-content"
+
+  - name: "Dread Forum"
+    url: "http://dreadytofatroptsdj6io7l3xptbet6onoyno2yv7jicoxknyazubrad.onion/"
+    category: "forum"
+    use_selenium: true
+    rules:
+      # On the main page, we want to follow links that lead to threads.
+      follow_links: "a.thread-title-link" # Placeholder selector for Dread
+      pagination: ".pagination .next a" # Placeholder selector for the 'next page' button
+      # Item-specific rules for when we are on a thread page
+      post_title: ".thread-title" # Placeholder
+      post_author: ".author-name" # Placeholder
+      post_content: ".post-message" # Placeholder
+
+  - name: "Best Carding World"
+    url: "http://bestteermb42clir6ux7xm76d4jjodh3fpahjqgbddbmfrgp4skg2wqd.onion/"
+    category: "marketplace"
+    rules:
+      follow_links: "a" # Follow all links for testing
+      post_title: "h1" # Placeholder
+      post_author: "body" # Placeholder
+      post_content: "body" # Placeholder
+
+  - name: "BFD Forum"
+    url: "http://bfdxjkv5e2z3ilrifzbnvxxvhbzsj67akjpj3zc6smzr4vv6oz565gyd.onion/"
+    category: "forum"
+    rules:
+      follow_links: "a" # Follow all links for testing
+      post_title: "h1" # Placeholder
+      post_author: "body" # Placeholder
+      post_content: "body" # Placeholder
