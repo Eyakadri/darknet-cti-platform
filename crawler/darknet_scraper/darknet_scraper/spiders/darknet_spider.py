@@ -1,311 +1,126 @@
-"""
-Main spider for crawling darknet sites for CTI intelligence.
-"""
+# crawler/darknet_scraper/darknet_scraper/spiders/darknet_spider.py
 
 import scrapy
 import hashlib
-import re
 from datetime import datetime
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
-# Add parent directory to path to import our modules
-import sys
-import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..'))
-
-from config.settings import TARGET_SITES
-from producer.scrapy_project.cti_crawler.items import CtiItem
-
+from ..items import CtiItem
 
 class DarknetSpider(scrapy.Spider):
-    """Spider for crawling darknet forums and marketplaces."""
-    
+    """
+    A config-driven spider that crawls darknet sites for CTI.
+    Its behavior is controlled by the 'target_sites' list in the project settings.
+    """
     name = 'darknet'
-    allowed_domains = []
-    start_urls = TARGET_SITES
-    
-    # Custom settings
-    custom_settings = {
-        'DOWNLOAD_DELAY': 5,
-        'RANDOMIZE_DOWNLOAD_DELAY': 0.5,
-        'CONCURRENT_REQUESTS': 1,
-        'CONCURRENT_REQUESTS_PER_DOMAIN': 1,
-        'AUTOTHROTTLE_ENABLED': True,
-        'AUTOTHROTTLE_START_DELAY': 3,
-        'AUTOTHROTTLE_MAX_DELAY': 15,
-        'AUTOTHROTTLE_TARGET_CONCURRENCY': 1.0,
-    }
-    
-    def __init__(self, *args, **kwargs):
-        super(DarknetSpider, self).__init__(*args, **kwargs)
-        
-        # Extract domains from start URLs for allowed_domains
-        for url in self.start_urls:
-            domain = urlparse(url).netloc
-            if domain and domain not in self.allowed_domains:
-                self.allowed_domains.append(domain)
-        
-        self.logger.info(f"Spider initialized with {len(self.start_urls)} start URLs")
-        self.logger.info(f"Allowed domains: {self.allowed_domains}")
-    
-    def start_requests(self):
-        """Generate initial requests."""
-        for url in self.start_urls:
+
+    @classmethod
+    def from_crawler(cls, crawler, *args, **kwargs):
+        spider = super(DarknetSpider, cls).from_crawler(crawler, *args, **kwargs)
+        # Load the structured list of site objects from settings
+        spider.target_sites = crawler.settings.getlist('TARGET_SITES')
+        # Dynamically build the list of allowed domains from the config
+        spider.allowed_domains = []
+        from urllib.parse import urlparse
+        for site in spider.target_sites:
+            domain = urlparse(site['url']).netloc
+            if domain and domain not in spider.allowed_domains:
+                spider.allowed_domains.append(domain)
+        spider.logger.info(f"Spider initialized for {len(spider.target_sites)} sites.")
+        spider.logger.info(f"Allowed domains: {spider.allowed_domains}")
+        return spider
+
+    def start_requests(self ):
+        self.logger.info("Starting requests based on target_sites configuration...")
+        for site_config in self.target_sites:
+            self.logger.info(f"Generating initial request for: {site_config['name']}")
+            meta = {'site_config': site_config}
+
+            # Flag selenium usage per-site
+            if site_config.get('use_selenium', False):
+                self.logger.info(f"'{site_config['name']}' requires Selenium. Setting flag.")
+                meta['use_selenium'] = True
+
             yield scrapy.Request(
-                url=url,
-                callback=self.parse,
+                url=site_config['url'],
+                callback=self.parse_list_page,
                 errback=self.handle_error,
-                meta={
-                    'site_category': self.categorize_site(url),
-                    'depth': 0
-                }
+                meta=meta,
+                dont_filter=True  # allow revisits if same URL appears in list
             )
-    
-    def parse(self, response):
-        """Parse main page and extract content."""
-        try:
-            # Extract basic information
-            item = self.extract_basic_info(response)
-            
-            if item:
-                yield item
-            
-            # Follow links to other pages (limited depth)
-            depth = response.meta.get('depth', 0)
-            if depth < 3:  # Limit crawling depth
-                for link in self.extract_links(response):
-                    yield scrapy.Request(
-                        url=link,
-                        callback=self.parse,
-                        errback=self.handle_error,
-                        meta={
-                            'site_category': response.meta.get('site_category'),
-                            'depth': depth + 1
-                        }
-                    )
+
+
+    def parse_list_page(self, response):
+        """
+        Parses pages that contain lists of links (e.g., a forum's thread list).
+        Its job is to find content links and pagination links and follow them.
+        """
+        site_config = response.meta['site_config']
+        rules = site_config.get('rules', {})
+
+        # 1. Find and follow links to the actual content pages
+        follow_selector = rules.get('follow_links')
+        if follow_selector:
+            content_links = response.css(follow_selector + "::attr(href)").getall()
+            self.logger.info(f"Found {len(content_links)} content links on {response.url}")
+            for link in content_links:
+                yield response.follow(
+                    link, 
+                    callback=self.parse_item_page,  # Use the item parser for these links
+                    meta={'site_config': site_config}
+                )
+
+        # 2. Find and follow the "next page" link for pagination
+        pagination_selector = rules.get('pagination')
+        if pagination_selector:
+            next_page_link = response.css(pagination_selector + "::attr(href)").get()
+            if next_page_link:
+                self.logger.info(f"Following pagination link to next page from {response.url}")
+                yield response.follow(
+                    next_page_link, 
+                    callback=self.parse_list_page,  # The next page is also a list page
+                    meta={'site_config': site_config}
+                )
+
+    def parse_item_page(self, response):
+        """
+        Parses the final content page, extracts data into a CtiItem, and yields it.
+        """
+        site_config = response.meta['site_config']
+        rules = site_config.get('rules', {})
+        self.logger.info(f"Parsing item page: {response.url}")
+
+        item = CtiItem()
+        item['url'] = response.url
+        item['site_category'] = site_config.get('category', 'unknown')
+        item['crawled_at'] = datetime.now().isoformat()
+        item['raw_html'] = response.text
         
-        except Exception as e:
-            self.logger.error(f"Error parsing {response.url}: {e}")
-    
-    def extract_basic_info(self, response):
-        """Extract basic information from the page."""
-        try:
-            # Parse HTML with BeautifulSoup
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Remove script and style elements
-            for script in soup(["script", "style"]):
-                script.decompose()
-            
-            # Extract text content
-            text_content = soup.get_text()
-            
-            # Clean up text
-            lines = (line.strip() for line in text_content.splitlines())
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-            text_content = ' '.join(chunk for chunk in chunks if chunk)
-            
-            # Skip if content is too short (likely error page or empty)
-            if len(text_content) < 100:
-                self.logger.info(f"Skipping short content: {response.url}")
-                return None
-            
-            # Calculate content hash
-            content_hash = hashlib.sha256(text_content.encode('utf-8')).hexdigest()
-            
-            # Create item
-            item = CtiItem()
-            item['url'] = response.url
-            item['title'] = self.extract_title(soup)
-            item['content'] = text_content
-            item['raw_html'] = response.text
-            item['crawled_at'] = datetime.now().isoformat()
-            item['content_hash'] = content_hash
-            item['site_category'] = response.meta.get('site_category', 'unknown')
-            item['response_time'] = response.meta.get('download_latency', 0)
-            item['content_length'] = len(text_content)
-            
-            # Extract additional metadata
-            item['author'] = self.extract_author(soup)
-            item['post_date'] = self.extract_post_date(soup)
-            item['thread_id'] = self.extract_thread_id(response.url)
-            item['post_id'] = self.extract_post_id(response.url)
-            item['links'] = self.extract_internal_links(soup, response.url)
-            item['images'] = self.extract_images(soup, response.url)
-            
-            self.logger.info(f"Extracted item from {response.url} ({len(text_content)} chars)")
-            return item
-            
-        except Exception as e:
-            self.logger.error(f"Error extracting info from {response.url}: {e}")
-            return None
-    
-    def extract_title(self, soup):
-        """Extract page title."""
-        title_tag = soup.find('title')
-        if title_tag:
-            return title_tag.get_text().strip()
+        # Use precise CSS selectors from rules, with fallbacks
+        item['title'] = response.css(rules.get('post_title', 'title') + " ::text").get(default="").strip()
+        item['author'] = response.css(rules.get('post_author', '') + " ::text").get(default="").strip()
         
-        # Try h1 tag
-        h1_tag = soup.find('h1')
-        if h1_tag:
-            return h1_tag.get_text().strip()
+        # For content, get the HTML block and clean it with BeautifulSoup
+        content_html = response.css(rules.get('post_content', 'body')).get(default="")
+        soup = BeautifulSoup(content_html, 'html.parser')
+        text_content = soup.get_text(separator=' ', strip=True)
+        item['content'] = text_content
         
-        return "No title"
-    
-    def extract_author(self, soup):
-        """Extract author information."""
-        # Common patterns for author extraction
-        author_patterns = [
-            {'class': re.compile(r'.*author.*', re.I)},
-            {'class': re.compile(r'.*user.*', re.I)},
-            {'class': re.compile(r'.*poster.*', re.I)},
-        ]
-        
-        for pattern in author_patterns:
-            author_elem = soup.find(['div', 'span', 'p'], pattern)
-            if author_elem:
-                return author_elem.get_text().strip()
-        
-        return None
-    
-    def extract_post_date(self, soup):
-        """Extract post date."""
-        # Common patterns for date extraction
-        date_patterns = [
-            {'class': re.compile(r'.*date.*', re.I)},
-            {'class': re.compile(r'.*time.*', re.I)},
-            {'class': re.compile(r'.*posted.*', re.I)},
-        ]
-        
-        for pattern in date_patterns:
-            date_elem = soup.find(['div', 'span', 'time'], pattern)
-            if date_elem:
-                return date_elem.get_text().strip()
-        
-        return None
-    
-    def extract_thread_id(self, url):
-        """Extract thread ID from URL."""
-        # Common patterns for thread IDs
-        patterns = [
-            r'thread[_-]?(\d+)',
-            r't[_-]?(\d+)',
-            r'topic[_-]?(\d+)',
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, url, re.I)
-            if match:
-                return match.group(1)
-        
-        return None
-    
-    def extract_post_id(self, url):
-        """Extract post ID from URL."""
-        # Common patterns for post IDs
-        patterns = [
-            r'post[_-]?(\d+)',
-            r'p[_-]?(\d+)',
-            r'msg[_-]?(\d+)',
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, url, re.I)
-            if match:
-                return match.group(1)
-        
-        return None
-    
-    def extract_links(self, response):
-        """Extract links for further crawling."""
-        links = []
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        for link in soup.find_all('a', href=True):
-            href = link['href']
-            full_url = urljoin(response.url, href)
-            
-            # Only follow links within allowed domains
-            if self.is_allowed_domain(full_url):
-                # Filter out common non-content links
-                if not self.is_excluded_link(href):
-                    links.append(full_url)
-        
-        # Limit number of links to prevent explosion
-        return links[:20]
-    
-    def extract_internal_links(self, soup, base_url):
-        """Extract internal links for metadata."""
-        links = []
-        for link in soup.find_all('a', href=True):
-            href = link['href']
-            full_url = urljoin(base_url, href)
-            links.append({
-                'url': full_url,
-                'text': link.get_text().strip()
-            })
-        return links[:10]  # Limit for storage
-    
-    def extract_images(self, soup, base_url):
-        """Extract image URLs."""
-        images = []
-        for img in soup.find_all('img', src=True):
-            src = img['src']
-            full_url = urljoin(base_url, src)
-            images.append({
-                'url': full_url,
-                'alt': img.get('alt', ''),
-                'title': img.get('title', '')
-            })
-        return images[:5]  # Limit for storage
-    
-    def is_allowed_domain(self, url):
-        """Check if URL domain is allowed."""
-        domain = urlparse(url).netloc
-        return domain in self.allowed_domains
-    
-    def is_excluded_link(self, href):
-        """Check if link should be excluded from crawling."""
-        excluded_patterns = [
-            r'logout',
-            r'login',
-            r'register',
-            r'search',
-            r'rss',
-            r'feed',
-            r'\.css$',
-            r'\.js$',
-            r'\.jpg$',
-            r'\.png$',
-            r'\.gif$',
-            r'\.pdf$',
-        ]
-        
-        for pattern in excluded_patterns:
-            if re.search(pattern, href, re.I):
-                return True
-        
-        return False
-    
-    def categorize_site(self, url):
-        """Categorize site based on URL patterns."""
-        url_lower = url.lower()
-        
-        if 'forum' in url_lower or 'dread' in url_lower:
-            return 'forum'
-        elif 'market' in url_lower or 'shop' in url_lower:
-            return 'marketplace'
-        elif 'leak' in url_lower or 'dump' in url_lower:
-            return 'data_leak'
+        # Calculate hash and add it to both the item and the response meta
+        content_hash = hashlib.sha256(text_content.encode('utf-8')).hexdigest()
+        item['content_hash'] = content_hash
+        response.meta['content_hash'] = content_hash  # For the StateCheckMiddleware
+
+        # Only yield the item if it has some actual text content
+        if text_content:
+            yield item
         else:
-            return 'unknown'
-    
+            self.logger.warning(f"No text content found for item at {response.url}")
+
     def handle_error(self, failure):
-        """Handle request errors."""
+        """
+        Handles request errors.
+        """
         self.logger.error(f"Request failed: {failure.request.url} - {failure.value}")
-        
-        # You could implement additional error handling here
-        # such as notifying the Tor manager about failures
 
