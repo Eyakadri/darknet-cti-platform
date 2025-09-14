@@ -139,3 +139,10 @@ HTTPCACHE_ENABLED = False
 
 # Logging
 LOG_LEVEL = 'INFO'
+
+# Derive RAW_DATA_DIR for pipelines from central config if available
+try:
+    from config.config_loader import config as _global_cfg  # type: ignore
+    RAW_DATA_DIR = str(_global_cfg.RAW_DATA_DIR)
+except Exception:
+    RAW_DATA_DIR = 'data/raw'

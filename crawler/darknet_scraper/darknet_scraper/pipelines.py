@@ -71,7 +71,8 @@ class RawDataStoragePipeline:
     This file acts as a message in a queue for the downstream 'Consumer' process.
     """
     def __init__(self, settings):
-        raw_data_dir = settings.get('RAW_DATA_DIR', 'data/raw_html')
+        # Align default with Config._set_paths() using 'data/raw'
+        raw_data_dir = settings.get('RAW_DATA_DIR', 'data/raw')
         self.raw_data_dir = Path(raw_data_dir)
         self.raw_data_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Raw data will be stored in: {self.raw_data_dir.resolve()}")
