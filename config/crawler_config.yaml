@@ -26,28 +26,31 @@ data_storage:
   hash_algorithm: sha256
 
 target_sites:
-  #- name: "CL0P^_- LEAKS"
-  #  url: "http://santat7kpllt6iyvqbr7q4amdv6dzrh6paatvyrzl7ry3zm72zigf4ad.onion/"
-  #  category: "data_leak_site"
-  #  use_selenium: true
-  #  rules:
-  #    follow_links: ".g-main-nav .g-dropdown a.g-menu-item-container"
-  #    pagination: null
-  #    post_title: "h2.g-title"
-  #    post_author: null
-  #    post_content: "div.platform-content"
-  #    images: ".platform-content img::attr(src )"
-
-  # - name: "Dread Forum"
-  #   url: "http://dreadytofatroptsdj6io7l3xptbet6onoyno2yv7jicoxknyazubrad.onion/"
-  #   category: "forum"
+  # - name: "CL0P^_- LEAKS"
+  #   url: "http://santat7kpllt6iyvqbr7q4amdv6dzrh6paatvyrzl7ry3zm72zigf4ad.onion/"
+  #   category: "data_leak_site"
   #   use_selenium: true
-  #   rules:      
-  #     follow_links: ".postBoard .item a.title"
-  #     pagination: ".pagination a.next"
-  #     post_title: "h1.p-title-value"
-  #     post_author: ".message-userDetails .username"
-  #     post_content: ".message-content .bbWrapper"
+  #   rules:
+  #     follow_links: ".g-main-nav .g-dropdown a.g-menu-item-container"
+  #     pagination: null
+  #     post_title: "h2.g-title"
+  #     post_author: null
+  #     post_content: "div.platform-content"
+  #     images: ".platform-content img::attr(src )"
+
+  - name: "Dread Forum"
+    url: "http://dreadytofatroptsdj6io7l3xptbet6onoyno2yv7jicoxknyazubrad.onion/"
+    category: "forum"
+    use_selenium: true
+    rules:      
+      follow_links: ".postBoard .item a.title"
+      pagination: ".pagination a.next"
+      thread_title: ".postTop .title-text"
+      post_container: ".item, .comment" # The main post is .item, comments are .comment
+      post_id_attr: "id" # The container has an id like "c-c95d8e9a6b3c19b73f"
+      post_author: ".top .username"
+      post_date: ".timestamp"
+      post_content: ".postContent, .commentBody"
 
   - name: "Best Carding World"
     url: "http://bestteermb42clir6ux7xm76d4jjodh3fpahjqgbddbmfrgp4skg2wqd.onion/"
@@ -55,9 +58,12 @@ target_sites:
     use_selenium: false 
     rules:
       follow_links: "a.forumtitle, a.topictitle"
-      post_container: "div.post"
       pagination: ".pagination .next a"
+      thread_title: "h2.topic-title a"
+      post_container: "div.post"
+      post_id_attr: "id" # phpBB posts usually have an id like "p12345"
       post_author: ".author"
+      post_date: ".author" # Date is often inside the author element
       post_content: ".content"
 
   - name: "BFD Forum"
@@ -66,7 +72,11 @@ target_sites:
     use_selenium: false
     rules:
       follow_links: ".node-title a, .structItem-title a"
-      post_container: "article.message"
       pagination: ".pageNav-jump--next"
+      thread_title: "h1.p-title-value"
+      post_container: "article.message"
+      post_id_attr: "data-content" # XenForo uses data-content="post-12345"
       post_author: ".message-name"
+      post_date: ".message-date time"
       post_content: ".message-body"
+      thread_url_contains: "threads/"

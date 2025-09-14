@@ -77,3 +77,12 @@ threat_actors:
   - dark halo
   - nobelium
   - hafnium
+
+# Regex extraction behavior (controls secondary raw text regex pass)
+regex_extraction:
+  enabled: true              # Master switch for regex-based entity extraction
+  prefer: "ruler"            # When duplicates: 'ruler' or 'regex' wins
+  include: []                # If non-empty, only these labels are kept (after source merge)
+  exclude: []                # Drop these labels after include filter
+  drop_overlapping: true     # If true, overlapping spans with same label are resolved by preference
+  skip_labels_from_yaml: true  # If true, do not run regex for labels already defined in custom_entities

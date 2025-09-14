@@ -44,6 +44,14 @@ class Config:
         self.PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
         self.STATE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         self.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        # Elasticsearch configuration exposure
+        es_section = (self.elastic or {}).get('elasticsearch', {}) if hasattr(self, 'elastic') else {}
+        self.ELASTICSEARCH_HOSTS = es_section.get('hosts', ['http://localhost:9200'])
+        self.ELASTICSEARCH_INDEX = es_section.get('index', 'cti_intelligence')
+
+        # Logging level fallback
+        logging_section = (self.elastic or {}).get('logging', {}) if hasattr(self, 'elastic') else {}
+        self.LOG_LEVEL = logging_section.get('level', 'INFO')
 
 # Singleton instance
 config = Config()
