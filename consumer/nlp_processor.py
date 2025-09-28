@@ -3,6 +3,7 @@ NLP Processor for extracting CTI entities from text using spaCy.
 """
 
 import re
+import ipaddress
 import yaml
 import spacy
 import logging
@@ -43,7 +44,7 @@ class CTINLPProcessor:
             self.entity_ruler = self.nlp.get_pipe('entity_ruler')
         else:
             # create via factory name to be compatible with spaCy v3+ (E966 fix)
-            self.entity_ruler = self.nlp.add_pipe('entity_ruler', before='ner', config={'overwrite_ents': True})
+            self.entity_ruler = self.nlp.add_pipe('entity_ruler', before='ner', config={'overwrite_ents': False})
         self.setup_custom_entities()
 
         # Precompile IOC / artifact regex patterns (broad but bounded)
@@ -314,6 +315,15 @@ class CTINLPProcessor:
         result = self.process_text(text)
         iocs = self.extract_iocs(text, result=result)
 
+        # --- Sanitize IP addresses (remove ports, embedded tokens, dedupe) ---
+        if iocs.get('ip_addresses'):
+            original_ips = iocs['ip_addresses']
+            cleaned_ips = self._sanitize_ip_list(original_ips)
+            dropped = set(original_ips) - set(cleaned_ips)
+            if dropped:
+                logger.debug(f"Sanitized IPs – kept={len(cleaned_ips)} dropped={len(dropped)} examples_dropped={list(dropped)[:3]}")
+            iocs['ip_addresses'] = cleaned_ips
+
         threat_indicators = {
             "malware_families": len(result.get("entities_by_type", {}).get("MALWARE_FAMILY", [])),
             "threat_actors": len(result.get("entities_by_type", {}).get("THREAT_ACTOR", [])),
@@ -325,12 +335,31 @@ class CTINLPProcessor:
             "crypto_addresses": len(iocs.get("btc_addresses", [])) + len(iocs.get("eth_addresses", []))
         }
 
-        threat_score = (
-            threat_indicators["malware_families"] * 10 +
-            threat_indicators["threat_actors"] * 15 +
-            threat_indicators["cves"] * 20 +
-            threat_indicators["total_iocs"] * 2
-        )
+        # --- NEW, GEOPOLITICALLY-AWARE SCORING ---
+        
+        threat_score = 0
+
+        # High-value indicators (malware, exploits)
+        threat_score += threat_indicators["cves"] * 50
+        threat_score += threat_indicators["threat_actors"] * 30
+        threat_score += threat_indicators["malware_families"] * 20
+
+        # Data leak indicators
+        email_count = len(iocs.get("emails", []))
+        if email_count > 10:
+            threat_score += 40
+
+        # Geopolitical context - finding a country is valuable context
+        if any(e['label'] == 'GPE' for e in result.get("entities", [])):
+            threat_score += 15 # Add points if a country is mentioned
+
+        # Low-value indicators
+        threat_score += threat_indicators["file_hashes"] * 5
+        threat_score += threat_indicators["ip_addresses"] * 1
+        threat_score += email_count * 0.5
+
+        # Ensure the score doesn't go over 100
+        threat_score = min(threat_score, 100)
 
         return {
             "threat_score": min(threat_score, 100),
@@ -341,3 +370,164 @@ class CTINLPProcessor:
             "normalized_text": result.get("normalized_text"),
             "text_length": result.get("text_length", 0)
         }
+
+    def _sanitize_ip_list(self, values: List[str]) -> List[str]:
+        """Return a list of valid standalone IP (v4 or v6) strings.
+
+        Handles cases like:
+          - '127.0.0.1:8080'  -> '127.0.0.1'
+          - '193.251.22.45:80' -> '193.251.22.45'
+          - "Monitor.4.1.0.0"  -> (discard, not an IP)
+          - "13904'114.122.142.122''Denpasar" -> '114.122.142.122'
+        """
+        if not values:
+            return []
+        ipv4_pattern = re.compile(r'(?:25[0-5]|2[0-4]\d|[01]?\d\d?)(?:\.(?:25[0-5]|2[0-4]\d|[01]?\d\d?)){3}')
+        ipv6_pattern = re.compile(r'\b(?:[A-F0-9]{1,4}:){2,7}[A-F0-9]{1,4}\b', re.IGNORECASE)
+        cleaned = []
+        seen = set()
+        for raw in values:
+            if not raw or len(raw) < 3:
+                continue
+            candidates = set()
+            for m in ipv4_pattern.finditer(raw):
+                candidates.add(m.group())
+            for m in ipv6_pattern.finditer(raw):
+                candidates.add(m.group())
+            for c in candidates:
+                try:
+                    # Validate; ipaddress module normalizes; we keep original string form
+                    ipaddress.ip_address(c)
+                    if c not in seen:
+                        seen.add(c)
+                        cleaned.append(c)
+                except ValueError:
+                    continue
+        return cleaned
+    
+    def extract_and_clean_breach_artifacts(self, text: str) -> (str, List[Dict]):
+        """
+        Finds and extracts breach artifact links (like file parts) and
+        returns a cleaned text and a list of the extracted artifacts.
+        """
+        artifacts = []
+        # This regex looks for the pattern: [ Part X of Y ][ SIZE ][ HASH_TYPE:HASH_VALUE ]
+        # It is very specific to the format you found.
+        artifact_pattern = re.compile(
+            r"\[\s*Part\s*\d+\s*of\s*\d+\s*\]\[\s*[\d.]+\w+\s*\]\[\s*(SHA\d+):([a-fA-F0-9]+)\s*\]"
+        )
+
+        # Find all matches
+        matches = list(artifact_pattern.finditer(text))
+
+        if not matches:
+            return text, []  # Return original text if no artifacts are found
+
+        # For each match, create a structured artifact object
+        for match in matches:
+            artifacts.append({
+                "hash_type": match.group(1),
+                "hash_value": match.group(2)
+            })
+
+        # Now, remove the matched patterns from the text to clean it up
+        cleaned_text = artifact_pattern.sub('', text).strip()
+        
+        return cleaned_text, artifacts
+    
+    def extract_victim_profile(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        A specialized parser for the RansomEXX victim page format.
+        This is a demo-focused function to extract a rich, structured
+        profile of a victim. It now accepts the full data object to
+        check for image-based proof.
+        """
+        profile = {
+            "name": None,
+            "domain": None,
+            "description": None,
+            "tags": [],
+            "breach": {
+                "date": None,
+                "record_count": None,
+                "leaked_tables": [],
+                "leaked_columns": [],
+                "download_link": None,
+                "proof_type": "unspecified" # Default value
+            }
+        }
+
+        text = data.get("content", "")
+        images = data.get("images", [])
+
+        if not text:
+            return profile
+
+        try:
+            # 1. Extract Victim Name and Domain (first line)
+            # This regex is more robust, looking for a clear name at the start.
+            name_match = re.search(r"^\s*([\w\s.-]+?)(?:\s*\(([\w.-]+)\))?\s*\n", text)
+            if name_match:
+                profile["name"] = name_match.group(1).strip()
+                if name_match.group(2):
+                    profile["domain"] = name_match.group(2).strip()
+
+            # 2. Extract Date and Tags
+            date_match = re.search(r"Date:\s*(.*)", text, re.IGNORECASE)
+            if date_match:
+                profile["breach"]["date"] = date_match.group(1).strip()
+
+            tags_match = re.search(r"Tags:\s*(.*)", text, re.IGNORECASE)
+            if tags_match:
+                profile["tags"] = [tag.strip() for tag in tags_match.group(1).replace("#", "").split()]
+
+            # 3. Extract Record Count from mysql block
+            record_count_match = re.search(r"\|\s*count\(\*\)\s*\|\s*\n\s*\+--[+-]+\s*\n\s*\|\s*([\d,]+)\s*\|", text, re.MULTILINE)
+            if record_count_match:
+                # Remove commas from the number before converting to int
+                count_str = record_count_match.group(1).replace(",", "")
+                profile["breach"]["record_count"] = int(count_str)
+
+            # 4. Extract Leaked Columns from CREATE TABLE statement
+            create_table_match = re.search(r"CREATE TABLE\s+`?(\w+)`?\s*\((.*?)\)", text, re.DOTALL)
+            if create_table_match:
+                table_name = create_table_match.group(1)
+                profile["breach"]["leaked_tables"].append(table_name)
+                
+                columns_text = create_table_match.group(2)
+                column_matches = re.findall(r"^\s*`?(\w+)`?", columns_text, re.MULTILINE)
+                if column_matches:
+                    # Filter out common SQL keywords that aren't columns
+                    sql_keywords = {'primary', 'key', 'unique', 'index'}
+                    profile["breach"]["leaked_columns"] = [c for c in column_matches if c.lower() not in sql_keywords]
+
+            # 5. Extract Description (heuristic: text between tags and mysql/DOWNLOAD)
+            desc_start = -1
+            desc_end = -1
+            if tags_match:
+                desc_start = tags_match.end()
+            
+            # Find the earliest occurrence of either mysql or DOWNLOAD to end the description
+            mysql_match = re.search(r"mysql>", text)
+            download_match_for_desc = re.search(r"DOWNLOAD\s*\(", text)
+            
+            end_points = [m.start() for m in [mysql_match, download_match_for_desc] if m]
+            if end_points:
+                desc_end = min(end_points)
+            
+            if desc_start != -1 and desc_end != -1:
+                description = text[desc_start:desc_end].strip()
+                profile["description"] = description
+
+            # 6. Determine Proof Type
+            if profile["breach"]["record_count"] or profile["breach"]["leaked_columns"]:
+                profile["breach"]["proof_type"] = "database_dump_text"
+            elif images:
+                # Check if images are not just tiny tracking pixels
+                if any("data:image/gif" not in img for img in images):
+                     profile["breach"]["proof_type"] = "image_screenshot"
+
+        except Exception as e:
+            logger.error(f"Error extracting victim profile: {e}")
+        
+        return profile

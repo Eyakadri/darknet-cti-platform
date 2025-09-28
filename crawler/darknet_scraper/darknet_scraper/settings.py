@@ -39,7 +39,10 @@ try:
 
     # Tor settings
     TOR_PROXY_HOST = config['tor'].get('proxy_host', '127.0.0.1')
+    # Historical "proxy_port" can be either Privoxy (HTTP) or direct Tor SOCKS. Keep for BC.
     TOR_PROXY_PORT = config['tor'].get('proxy_port', 9050)
+    # Optional explicit SOCKS port (recommended for Selenium / .onion). Falls back to common default.
+    TOR_SOCKS_PORT = config['tor'].get('socks_port', 9050)
     TOR_CONTROL_PORT = config['tor'].get('control_port', 9051)
     TOR_CONTROL_PASSWORD = config['tor'].get('control_password', None)
 
@@ -74,7 +77,7 @@ NEWSPIDER_MODULE = 'darknet_scraper.spiders'
 ROBOTSTXT_OBEY = False
 
 # Disable cookies (enabled by default)
-COOKIES_ENABLED = False
+COOKIES_ENABLED = True
 
 # Disable Telnet Console (enabled by default)
 TELNETCONSOLE_ENABLED = False
@@ -96,7 +99,7 @@ DOWNLOADER_MIDDLEWARES = {
    'darknet_scraper.middlewares.CustomTorProxyMiddleware': 100,
    
    # This is our NEW Selenium middleware
-   'darknet_scraper.middlewares.SeleniumMiddleware': 543,
+    'darknet_scraper.middlewares.SeleniumMiddleware': 543,
    
    # This is our existing retry middleware
    'scrapy.downloadermiddlewares.retry.RetryMiddleware': None,

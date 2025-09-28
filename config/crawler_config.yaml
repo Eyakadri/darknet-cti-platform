@@ -23,20 +23,21 @@ redis:
   db: 0
 
 data_storage:
-  hash_algorithm: sha256
+  hash_algorithm: sha25
+  raw_dir: crawler/darknet_scraper/data/raw
+  processed_dir: data/processed
 
 target_sites:
-  # - name: "CL0P^_- LEAKS"
-  #   url: "http://santat7kpllt6iyvqbr7q4amdv6dzrh6paatvyrzl7ry3zm72zigf4ad.onion/"
-  #   category: "data_leak_site"
-  #   use_selenium: true
-  #   rules:
-  #     follow_links: ".g-main-nav .g-dropdown a.g-menu-item-container"
-  #     pagination: null
-  #     post_title: "h2.g-title"
-  #     post_author: null
-  #     post_content: "div.platform-content"
-  #     images: ".platform-content img::attr(src )"
+# - name: "CL0P^_- LEAKS" ==> This site under testing for the session handling issue
+#   url: "http://santat7kpllt6iyvqbr7q4amdv6dzrh6paatvyrzl7ry3zm72zigf4ad.onion/pilotthomas-com"
+#   category: "data_leak_site"
+#   use_selenium: true
+#   rules:
+#     follow_links: ".g-main-nav .g-dropdown .g-sublevel a.g-menu-item-container"
+#     post_title: "h2.g-title"
+#     post_author: null
+#     post_content: "div.platform-content"
+#     images: ".platform-content img::attr(src )"
 
   - name: "Dread Forum"
     url: "http://dreadytofatroptsdj6io7l3xptbet6onoyno2yv7jicoxknyazubrad.onion/"
@@ -52,31 +53,33 @@ target_sites:
       post_date: ".timestamp"
       post_content: ".postContent, .commentBody"
 
-  - name: "Best Carding World"
-    url: "http://bestteermb42clir6ux7xm76d4jjodh3fpahjqgbddbmfrgp4skg2wqd.onion/"
-    category: "marketplace"
-    use_selenium: false 
-    rules:
-      follow_links: "a.forumtitle, a.topictitle"
-      pagination: ".pagination .next a"
-      thread_title: "h2.topic-title a"
-      post_container: "div.post"
-      post_id_attr: "id" # phpBB posts usually have an id like "p12345"
-      post_author: ".author"
-      post_date: ".author" # Date is often inside the author element
-      post_content: ".content"
+#  - name: "Best Carding World"
+#    url: "http://bestteermb42clir6ux7xm76d4jjodh3fpahjqgbddbmfrgp4skg2wqd.onion/viewforum.php?f=45&sid=b7c7c92c81df1ff55697f053e770c0a3"
+#    category: "marketplace"
+#    use_selenium: false 
+#    rules:
+#      follow_links: "a.topictitle"
+#      pagination: ".pagination li.next a, .pagination a[rel='next']"
+#      thread_title: "h2.topic-title, h2.topic-title a, h2.forum-title"
+#      post_container: "div.post"
+#      post_id_attr: "id"
+#      post_author: ".postprofile a.username, .postprofile a.username-coloured, .author a.username-coloured"
+#      post_date: ".postbody p.author, p.author"
+#      post_content: ".content"
+#     thread_url_contains: "viewtopic.php"
 
-  - name: "BFD Forum"
-    url: "http://bfdxjkv5e2z3ilrifzbnvxxvhbzsj67akjpj3zc6smzr4vv6oz565gyd.onion/"
-    category: "forum"
-    use_selenium: false
-    rules:
-      follow_links: ".node-title a, .structItem-title a"
-      pagination: ".pageNav-jump--next"
-      thread_title: "h1.p-title-value"
-      post_container: "article.message"
-      post_id_attr: "data-content" # XenForo uses data-content="post-12345"
-      post_author: ".message-name"
-      post_date: ".message-date time"
-      post_content: ".message-body"
-      thread_url_contains: "threads/"
+#  - name: "RansomEXX Leak Site"
+#    url: "http://rnsm777cdsjrsdlbs4v5qoeppu3px6sb2igmh53jzrx7ipcrbjz5b2ad.onion/"
+#    category: "data_leak_site"
+#    use_selenium: false
+#    notes: "Initial placeholder rules; needs refinement after first crawl to inspect DOM."
+#    rules:
+#      follow_links: "maincontent ol li h4 a"
+#      pagination: "p.pagination-dir a"
+#      thread_title: "h4 b a"
+#      post_container: "maincontent"
+#      post_id_attr: null
+#      post_author: null
+#      post_date: "div b"
+#      post_content: "mainarticle"
+#      thread_url_contains: null

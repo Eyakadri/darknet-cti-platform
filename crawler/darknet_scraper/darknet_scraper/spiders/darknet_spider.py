@@ -149,6 +149,56 @@ class DarknetSpider(scrapy.Spider):
         rules = site_config.get('rules', {})
         self.logger.info(f"Parsing thread page (per-post extraction): {response.url}")
 
+        # --- Helper: date pattern extraction (basic, no external deps) ---
+        def extract_date_from_text(text: str):
+            """Attempt to find a plausible date string in free text and return ISO format if parsed.
+            Supports formats like:
+              2023-10-27, 2023/10/27
+              27-10-2023, 27/10/2023
+              October 27 2023, Oct 27, 2023, 27 October 2023
+            Returns first successfully parsed date as string; else ''."""
+            if not text:
+                return ''
+            month_names = (
+                'January','February','March','April','May','June',
+                'July','August','September','October','November','December'
+            )
+            month_abbr = tuple(m[:3] for m in month_names)
+            patterns = [
+                # ISO / Y-m-d
+                (r'(20\d{2})[/-](0?[1-9]|1[0-2])[/-](0?[1-9]|[12]\d|3[01])', ['%Y-%m-%d','%Y-%m-%d']),
+                # d-m-Y
+                (r'(0?[1-9]|[12]\d|3[01])[/-](0?[1-9]|1[0-2])[/-](20\d{2})', ['%d-%m-%Y','%d-%m-%Y']),
+                # Month d, Y  (October 7, 2023)
+                (r'(' + '|'.join(month_names) + r'|' + '|'.join(month_abbr) + r')\s+(0?[1-9]|[12]\d|3[01]),?\s+(20\d{2})', []),
+                # d Month Y  (7 October 2023)
+                (r'(0?[1-9]|[12]\d|3[01])\s+(' + '|'.join(month_names) + r'|' + '|'.join(month_abbr) + r')\s+(20\d{2})', []),
+            ]
+            # Normalize whitespace
+            snippet = ' '.join(text.split())[:1000]  # limit scan length
+            for regex, fmts in patterns:
+                m = re.search(regex, snippet, flags=re.IGNORECASE)
+                if not m:
+                    continue
+                candidate = m.group(0)
+                # Try dynamic format guesses
+                trial_formats = []
+                if fmts:
+                    trial_formats.extend(fmts)
+                # Add additional dynamic guesses
+                trial_formats.extend([
+                    '%Y-%m-%d','%Y/%m/%d','%d-%m-%Y','%d/%m/%Y',
+                    '%B %d %Y','%b %d %Y','%B %d, %Y','%b %d, %Y',
+                    '%d %B %Y','%d %b %Y'
+                ])
+                for fmt in trial_formats:
+                    try:
+                        dt = datetime.strptime(candidate.replace('/', '-').replace(',', ''), fmt)
+                        return dt.date().isoformat()
+                    except Exception:
+                        continue
+            return ''
+
         # Heuristic + config-based detection: if this is actually a forum index / list page, reroute.
         thread_url_markers = rules.get('thread_url_contains', [])  # list of substrings that indicate a thread
         if isinstance(thread_url_markers, str):
@@ -176,14 +226,25 @@ class DarknetSpider(scrapy.Spider):
             )
             return
 
-        # Thread-level title (used for all posts) – try specific then fallbacks
+        # Thread-level title (used for all posts) – try specific then fallbacks including meta og:title
         thread_title = ''
         title_sel = rules.get('thread_title') or rules.get('post_title')
         if title_sel:
-            raw_title_bits = response.css(title_sel + "::text, " + title_sel + " ::text").getall()
-            thread_title = (" ".join(t.strip() for t in raw_title_bits if t and t.strip()) or "").strip()
+            try:
+                raw_title_bits = response.css(title_sel + "::text, " + title_sel + " ::text").getall()
+                thread_title = (" ".join(t.strip() for t in raw_title_bits if t and t.strip()) or "").strip()
+            except Exception:
+                thread_title = ''
+        if not thread_title:
+            og_title = response.css("meta[property='og:title']::attr(content), meta[name='og:title']::attr(content)").get()
+            if og_title:
+                thread_title = og_title.strip()
         if not thread_title:
             thread_title = (response.css('h1::text, h1 ::text, h2::text').get(default="") or response.css('title::text').get(default="")).strip()
+        if not thread_title:
+            # As a last resort, derive from URL slug
+            slug = urlparse(response.url).path.rstrip('/').split('/')[-1]
+            thread_title = slug.replace('-', ' ').replace('_', ' ').title()
 
         # Container selector for posts
         post_container_sel = rules.get('post_container') or '.message, .post'
@@ -257,7 +318,24 @@ class DarknetSpider(scrapy.Spider):
             # Date/time
             post_date = ''
             if date_sel:
+                # primary extraction
                 post_date = node.css(date_sel + '::attr(datetime), ' + date_sel + '::text').get(default='').strip()
+                # If we only captured a label like 'Date:' or very short token, attempt heuristic search
+                if post_date.lower().rstrip(':').strip() in ('date', 'posted', '') or post_date.endswith(':'):
+                    # Search inside node then entire page for a date pattern
+                    search_scope = node.get() if hasattr(node, 'get') else ''
+                    derived = extract_date_from_text(search_scope)
+                    if not derived:
+                        derived = extract_date_from_text(response.text)
+                    if derived:
+                        post_date = derived
+                    else:
+                        post_date = ''  # discard label
+            if not post_date:
+                # global heuristic fallback (single date per page) – acceptable for leak sites
+                inferred_page_date = extract_date_from_text(response.text)
+                if inferred_page_date:
+                    post_date = inferred_page_date
             item['post_date'] = post_date
 
             # Content HTML extraction
@@ -284,11 +362,20 @@ class DarknetSpider(scrapy.Spider):
             for a in soup.find_all('a', href=True):
                 href = a['href'].strip()
                 if href and not href.startswith(('javascript:', 'mailto:')):
-                    links.append(href)
+                    # Convert relative links to absolute for downstream clarity
+                    try:
+                        href_full = response.urljoin(href)
+                    except Exception:
+                        href_full = href
+                    links.append(href_full)
             for img in soup.find_all('img', src=True):
                 src = img['src'].strip()
                 if src:
-                    images.append(src)
+                    try:
+                        src_full = response.urljoin(src)
+                    except Exception:
+                        src_full = src
+                    images.append(src_full)
             # Deduplicate
             item['links'] = list(dict.fromkeys(links))
             item['images'] = list(dict.fromkeys(images))

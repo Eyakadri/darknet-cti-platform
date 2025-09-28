@@ -83,7 +83,8 @@ class SeleniumMiddleware:
                  render_timeout: int = 180, # Make sure this is the new default
                  post_load_sleep: float = 3.0,
                  proxy_host: str = '127.0.0.1',
-                 proxy_port: int = 8118):
+                 proxy_port: int = 8118,
+                 socks_port: int = 9050):
         self.enabled = enabled
         self.headless = headless
         self.max_drivers = max_drivers
@@ -91,6 +92,7 @@ class SeleniumMiddleware:
         self.post_load_sleep = post_load_sleep
         self.proxy_host = proxy_host
         self.proxy_port = proxy_port
+        self.socks_port = socks_port
         self._driver_pool: Deque[webdriver.Firefox] = deque()
         self._in_use = 0
         
@@ -108,24 +110,35 @@ class SeleniumMiddleware:
             render_timeout=settings.getint('SELENIUM_RENDER_TIMEOUT', 180), # New default
             post_load_sleep=settings.getfloat('SELENIUM_POST_LOAD_SLEEP', 3.0),
             proxy_host=settings.get('TOR_PROXY_HOST', '127.0.0.1'),
-            proxy_port=settings.getint('TOR_PROXY_PORT', 8118)
+            proxy_port=settings.getint('TOR_PROXY_PORT', 8118),
+            socks_port=settings.getint('TOR_SOCKS_PORT', settings.getint('TOR_PROXY_PORT', 9050))
         )
     
     def _build_driver(self) -> webdriver.Firefox:
         opts = FirefoxOptions()
         if self.headless:
             opts.add_argument('--headless')
-        # Proxy prefs (Privoxy + Tor)
+        # We always configure SOCKS (Tor) directly for .onion reliability. HTTP/SSL proxy is optional.
         opts.set_preference('network.proxy.type', 1)
-        opts.set_preference('network.proxy.http', self.proxy_host)
-        opts.set_preference('network.proxy.http_port', self.proxy_port)
-        opts.set_preference('network.proxy.ssl', self.proxy_host)
-        opts.set_preference('network.proxy.ssl_port', self.proxy_port)
+        # HTTP(S) via Privoxy if provided
+        if self.proxy_port:
+            opts.set_preference('network.proxy.http', self.proxy_host)
+            opts.set_preference('network.proxy.http_port', self.proxy_port)
+            opts.set_preference('network.proxy.ssl', self.proxy_host)
+            opts.set_preference('network.proxy.ssl_port', self.proxy_port)
+        # SOCKS for Tor circuit routing
+        opts.set_preference('network.proxy.socks', self.proxy_host)
+        opts.set_preference('network.proxy.socks_port', self.socks_port)
         opts.set_preference('network.proxy.socks_remote_dns', True)
         # Lighter footprint
         opts.set_preference('browser.cache.disk.enable', False)
         opts.set_preference('browser.cache.memory.enable', False)
         opts.set_preference('privacy.trackingprotection.enabled', True)
+        # Reduce WebGL / canvas fingerprinting noise (optional future)
+        # opts.set_preference('webgl.disabled', True)
+        # Selenium 4: desired_capabilities param removed; set capabilities via options
+        # (Fix for: __init__() got an unexpected keyword argument 'desired_capabilities')
+        opts.set_capability('pageLoadStrategy', 'normal')
         try:
             driver = webdriver.Firefox(options=opts)
             driver.set_page_load_timeout(self.render_timeout)
@@ -213,7 +226,7 @@ class SeleniumMiddleware:
         try:
             driver = self._acquire_driver()
             temp_driver = driver not in self._driver_pool and self._in_use > self.max_drivers
-            logger.info(f"[Selenium] Fetching {request.url}")
+            logger.info(f"[Selenium] Fetching {request.url} (timeout={self.render_timeout}s, headless={self.headless})")
             driver.get(request.url)
 
             # --- CALL THE NEW GENERIC HANDLER ---
@@ -227,7 +240,7 @@ class SeleniumMiddleware:
             final_url = driver.current_url
             return HtmlResponse(final_url, body=body, encoding='utf-8', request=request)
         except TimeoutException as e:
-            logger.warning(f"Timeout loading {request.url}: {e}")
+            logger.warning(f"Timeout loading {request.url}: {e}. Will allow Scrapy retry chain.")
             return None
         except WebDriverException as e:
             logger.error(f"WebDriver error for {request.url}: {e}")

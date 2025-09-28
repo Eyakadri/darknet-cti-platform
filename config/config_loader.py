@@ -31,19 +31,14 @@ class Config:
         # Default directories (can be in crawler_config.yaml too)
         raw_dir = self.crawler.get('data_storage', {}).get('raw_dir', 'data/raw')
         processed_dir = self.crawler.get('data_storage', {}).get('processed_dir', 'data/processed')
-        state_db = self.crawler.get('data_storage', {}).get('state_db', 'db/state.db')
-        log_file = self.crawler.get('data_storage', {}).get('log_file', 'logs/app.log')
 
         self.RAW_DATA_DIR = self.BASE_DIR / raw_dir
         self.PROCESSED_DATA_DIR = self.BASE_DIR / processed_dir
-        self.STATE_DB_PATH = self.BASE_DIR / state_db
-        self.LOG_FILE = self.BASE_DIR / log_file
 
         # Ensure directories exist
         self.RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
         self.PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
-        self.STATE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        self.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
         # Elasticsearch configuration exposure
         es_section = (self.elastic or {}).get('elasticsearch', {}) if hasattr(self, 'elastic') else {}
         self.ELASTICSEARCH_HOSTS = es_section.get('hosts', ['http://localhost:9200'])

@@ -5,7 +5,7 @@ requires = ["setuptools", "wheel"]
 name = "darknet-cti-platform"
 version = "0.1.0"
 description = "Cyber Threat Intelligence Darknet crawling and NLP pipeline"
-authors = [ { name = "Your Name" } ]
+authors = [ { name = "Eya Kadri" } ]
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
