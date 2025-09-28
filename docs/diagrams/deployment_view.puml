@@ -1,0 +1,35 @@
+@startuml
+' Deployment View (Current & Future)
+skinparam backgroundColor #0d1117
+skinparam nodeBackgroundColor #161b22
+skinparam nodeBorderColor #30363d
+skinparam ArrowColor #58a6ff
+skinparam defaultTextAlignment center
+skinparam FontColor #c9d1d9
+
+cloud "Hidden Services" as Darknet
+node "Host Machine" as Host {
+  node "Python Env" as Py {
+    component "Crawler\n(Scrapy)" as Crawler
+    component "Processor\n(DataProcessor + NLP)" as Processor
+  }
+  node "Docker Compose" as Compose {
+    database "Elasticsearch" as ES
+    node "Kibana" as Kib
+  }
+  folder "data/raw" as Raw
+  folder "data/processed" as Proc
+}
+
+Darknet --> Crawler : HTTP / Tor
+Crawler --> Raw : JSON files
+Processor --> Raw : Read
+Processor --> Proc : Move processed
+Processor --> ES : Index Docs
+Kib --> ES : Queries
+
+' Future Optional
+cloud "Future: Queue (Redis Streams / Kafka)" as Queue
+Crawler -[#orange,dashed]-> Queue : Events
+Queue -[#orange,dashed]-> Processor : Consume
+@enduml

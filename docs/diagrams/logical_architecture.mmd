@@ -1,0 +1,35 @@
+%% Mermaid Logical (C4 Level 2) Diagram
+flowchart TB
+    subgraph Acquisition[Acquisition Layer]
+        Crawler[Scrapy Spider\nDarknetSpider]
+        Tor[Tor / Proxy Middleware]
+        Selenium[Selenium (optional)]
+    end
+
+    subgraph Processing[Processing Layer]
+        DP[DataProcessor]
+        NLP[NLP Processor\n(spaCy + regex)]
+        Cleaner[Breach Artifact Cleaner]
+        Scorer[Threat Scoring]
+    end
+
+    subgraph Storage[Storage & Access]
+        ES[(Elasticsearch Index\ncti_intelligence)]
+    end
+
+    subgraph Analytics[Analytics]
+        Kib[Kibana]
+        Graf[Grafana (optional)]
+    end
+
+    Sources[[Hidden Services / Forums]] --> Crawler
+    Crawler -->|Raw JSON| DP
+    Tor -.-> Crawler
+    Selenium -.-> Crawler
+    DP --> Cleaner --> NLP --> Scorer --> DP
+    DP -->|Enriched Docs| ES
+    ES --> Kib
+    ES --> Graf
+    Analyst[[Analyst]] --> Kib
+    Operator[[Operator]] --> Crawler
+    Operator --> DP
