@@ -39,47 +39,47 @@ target_sites:
 #     post_content: "div.platform-content"
 #     images: ".platform-content img::attr(src )"
 
-  - name: "Dread Forum"
-    url: "http://dreadytofatroptsdj6io7l3xptbet6onoyno2yv7jicoxknyazubrad.onion/"
-    category: "forum"
-    use_selenium: true
-    rules:      
-      follow_links: ".postBoard .item a.title"
-      pagination: ".pagination a.next"
-      thread_title: ".postTop .title-text"
-      post_container: ".item, .comment" # The main post is .item, comments are .comment
-      post_id_attr: "id" # The container has an id like "c-c95d8e9a6b3c19b73f"
-      post_author: ".top .username"
-      post_date: ".timestamp"
-      post_content: ".postContent, .commentBody"
+#  - name: "Dread Forum"
+#    url: "http://dreadytofatroptsdj6io7l3xptbet6onoyno2yv7jicoxknyazubrad.onion/"
+#    category: "forum"
+#    use_selenium: true
+#    rules:      
+#      follow_links: ".postBoard .item a.title"
+#      pagination: ".pagination a.next"
+#      thread_title: ".postTop .title-text"
+#      post_container: ".item, .comment" # The main post is .item, comments are .comment
+#      post_id_attr: "id" # The container has an id like "c-c95d8e9a6b3c19b73f"
+#      post_author: ".top .username"
+#      post_date: ".timestamp"
+#      post_content: ".postContent, .commentBody"
 
 #  - name: "Best Carding World"
-#    url: "http://bestteermb42clir6ux7xm76d4jjodh3fpahjqgbddbmfrgp4skg2wqd.onion/viewforum.php?f=45&sid=b7c7c92c81df1ff55697f053e770c0a3"
+#    url: "http://bestteermb42clir6ux7xm76d4jjodh3fpahjqgbddbmfrgp4skg2wqd.onion/viewforum.php?f=45"
 #    category: "marketplace"
 #    use_selenium: false 
 #    rules:
 #      follow_links: "a.topictitle"
 #      pagination: ".pagination li.next a, .pagination a[rel='next']"
-#      thread_title: "h2.topic-title, h2.topic-title a, h2.forum-title"
+#      thread_title: "h4 b a, h2.topic-title, h2.topic-title a, h2.forum-title"
 #      post_container: "div.post"
 #      post_id_attr: "id"
 #      post_author: ".postprofile a.username, .postprofile a.username-coloured, .author a.username-coloured"
 #      post_date: ".postbody p.author, p.author"
 #      post_content: ".content"
-#     thread_url_contains: "viewtopic.php"
+#      thread_url_contains: "viewtopic.php"
 
-#  - name: "RansomEXX Leak Site"
-#    url: "http://rnsm777cdsjrsdlbs4v5qoeppu3px6sb2igmh53jzrx7ipcrbjz5b2ad.onion/"
-#    category: "data_leak_site"
-#    use_selenium: false
-#    notes: "Initial placeholder rules; needs refinement after first crawl to inspect DOM."
-#    rules:
-#      follow_links: "maincontent ol li h4 a"
-#      pagination: "p.pagination-dir a"
-#      thread_title: "h4 b a"
-#      post_container: "maincontent"
-#      post_id_attr: null
-#      post_author: null
-#      post_date: "div b"
-#      post_content: "mainarticle"
-#      thread_url_contains: null
+  - name: "RansomEXX Leak Site"
+    url: "http://rnsm777cdsjrsdlbs4v5qoeppu3px6sb2igmh53jzrx7ipcrbjz5b2ad.onion/"
+    category: "data_leak_site"
+    use_selenium: false
+    notes: "Initial placeholder rules; needs refinement after first crawl to inspect DOM."
+    rules:
+      follow_links: "maincontent ol li h4 a"
+      pagination: "p.pagination-dir a"
+      thread_title: "h4 b a"
+      post_container: "maincontent"
+      post_id_attr: null
+      post_author: null
+      post_date: "div b"
+      post_content: "mainarticle"
+      thread_url_contains: null
