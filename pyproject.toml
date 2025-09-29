@@ -1,5 +1,13 @@
+## ---------------------------------------------------------------------------
+## Darknet CTI Platform - Project configuration (pyproject.toml)
+##
+## Purpose: Defines build system, core metadata, and runtime dependencies for
+## the crawling + NLP + indexing pipeline (Scrapy -> NLP (spaCy) -> Elasticsearch).
+## Python baseline (>=3.8) chosen for compatibility with Scrapy 2.11 and spaCy 3.7.
+## ---------------------------------------------------------------------------
+
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools", "wheel"]  # Using basic build backend; poetry/pdm not required yet.
 
 [project]
 name = "darknet-cti-platform"
@@ -8,17 +16,31 @@ description = "Cyber Threat Intelligence Darknet crawling and NLP pipeline"
 authors = [ { name = "Eya Kadri" } ]
 readme = "README.md"
 requires-python = ">=3.8"
+## Runtime dependencies:
+##  scrapy         - Core asynchronous crawler framework (Tor-friendly via SOCKS proxy).
+##  spacy          - NLP pipeline (exact pin for model compatibility & reproducibility).
+##  redis          - (Planned / optional) queueing / caching backend integration.
+##  stem           - Controls Tor (if rotating identities / circuits are implemented).
+##  PyYAML         - Structured configuration loading from YAML files in config/.
+##  beautifulsoup4 - Fallback / supplemental HTML parsing & cleanup.
+##  pysocks        - Explicit SOCKS5 support (Tor routing for requests / Scrapy).
+##  requests       - Simpler HTTP fetches for auxiliary tasks (non-Scrapy utilities).
+##  lxml           - Fast, robust HTML/XML parsing (Scrapy & BS4 can leverage it).
+##  elasticsearch  - Client for indexing processed intelligence artifacts.
+## Notes:
+##  * Keep spaCy pinned to avoid silent model incompatibilities.
+##  * Consider pinning scrapy if future breaking changes appear.
 dependencies = [
-    "scrapy>=2.11",
-    "spacy==3.7.5",
-    "redis>=5.0",
-    "stem>=1.8",
-    "PyYAML>=6.0",
-    "beautifulsoup4>=4.12",
-    "pysocks==1.7.1",
-    "requests==2.32.3",
-    "lxml==5.3.0",
-    "elasticsearch>=8.0.0,<9.0.0"
+    "scrapy>=2.11",              # Crawling engine
+    "spacy==3.7.5",              # NLP (exact pin)
+    "redis>=5.0",                # Queue / cache (optional runtime use)
+    "stem>=1.8",                 # Tor control
+    "PyYAML>=6.0",               # YAML config
+    "beautifulsoup4>=4.12",      # HTML parsing helpers
+    "pysocks==1.7.1",            # SOCKS proxy (Tor)
+    "requests==2.32.3",          # HTTP utility
+    "lxml==5.3.0",               # Parser backend
+    "elasticsearch>=8.0.0,<9.0.0" # ES 8.x client
 ]
 
 [tool.pytest.ini_options]
