@@ -1,5 +1,5 @@
 import pytest
-import pytest
+import pytest  # duplicate import harmless; kept minimal edit (could remove)
 try:
     from consumer.nlp_processor import CTINLPProcessor
 except Exception as e:  # pragma: no cover
@@ -16,4 +16,4 @@ def test_basic_entity_extraction():
     assert 'CVE' in labels
     assert summary['iocs']['ip_addresses']
     assert summary['iocs']['btc_addresses']
-    assert summary['threat_score'] >= 0
+    assert summary['threat_score'] >= 0  # non-negative sanity

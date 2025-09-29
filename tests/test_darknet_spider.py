@@ -2,6 +2,9 @@ import pytest
 from scrapy.http import HtmlResponse, Request
 from crawler.darknet_scraper.darknet_scraper.spiders.darknet_spider import DarknetSpider
 
+# These HTML snippets emulate minimal forum list & thread pages so we can
+# exercise parsing logic without network or full site fixtures.
+
 HTML_LIST_PAGE = """
 <html><body>
   <div class='threads'>

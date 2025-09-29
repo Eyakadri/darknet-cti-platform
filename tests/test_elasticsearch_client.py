@@ -1,10 +1,13 @@
-# In tests/test_elasticsearch_client.py
+"""Unit tests for the lightweight ES wrapper.
+
+Rationale: we fake out the underlying client so tests are fast and do not
+require a running cluster. Focus is on arguments passed + basic control flow.
+"""
 
 import pytest
 from consumer.elasticsearch_client import CTIElasticsearchClient
 
-# This is a fake (or "mock" ) object that pretends to be the real Elasticsearch client.
-# It allows us to test our code without needing a real database.
+# Simple mock capturing last index call; enough for current assertions.
 class MockElasticsearch:
     def __init__(self, hosts, request_timeout):  # signature aligned with real client usage
         self._last_index_call = None
@@ -31,10 +34,7 @@ class MockElasticsearch:
 
 @pytest.fixture
 def mock_es_client(monkeypatch):
-    """
-    This fixture creates an instance of our CTIElasticsearchClient,
-    but it cleverly replaces the real Elasticsearch with our fake MockElasticsearch.
-    """
+    """Patch the module import so CTIElasticsearchClient uses MockElasticsearch."""
     # When the code tries to import 'Elasticsearch' from the 'elasticsearch' library,
     # monkeypatch will give it our fake MockElasticsearch class instead.
     monkeypatch.setattr("consumer.elasticsearch_client.Elasticsearch", MockElasticsearch)
@@ -45,10 +45,7 @@ def mock_es_client(monkeypatch):
 
 
 def test_index_document_with_mock(mock_es_client):
-    """
-    Tests that index_document correctly calls the underlying es.index method.
-    This test uses the mock_es_client and does NOT require a running database.
-    """
+    """index_document should add timestamps and forward id/doc correctly."""
     # 1. Arrange: Get the mocked client from the fixture and create a sample document.
     client = mock_es_client
     sample_doc = {
@@ -76,7 +73,7 @@ def test_index_document_with_mock(mock_es_client):
 
 
 def test_refresh_index_with_mock(monkeypatch):
-    """Ensure refresh_index attempts a refresh when connected and handles absence gracefully."""
+    """refresh_index should call underlying indices.refresh when available."""
     monkeypatch.setattr("consumer.elasticsearch_client.Elasticsearch", MockElasticsearch)
     client = CTIElasticsearchClient()
     assert client.connected is True
