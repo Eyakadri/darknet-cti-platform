@@ -23,49 +23,64 @@ This platform automates the entire CTI lifecycle: from ethical collection on dar
 
 ## ⚙️ Project Flow
 ```mermaid
-flowchart TD
-        %% ===== Collection Layer =====
-        subgraph COL[1. Collection]
-                A["<img src='https://www.svgrepo.com/show/445278/tor-browser.svg' width='22' />\nDarknet Sources"]
-                P[("Tor / Privoxy\nSOCKS Proxy")]
-                B["<img src='https://www.svgrepo.com/show/374071/scrapy.svg' width='22' />\nScrapy Crawler"]
-                S[["Selenium Headless\n(Only if JS needed)"]]
-        end
+graph TD
+    %% Define the major stages of the pipeline
+    subgraph "1. Collection"
+        A["<img src='https://www.svgrepo.com/show/445278/tor-browser.svg' width='25' />  
+Darknet Sources"]
+        B["<img src='https://www.svgrepo.com/show/374071/scrapy.svg' width='25' />  
+Scrapy Crawler"]
+        S["<img src='https://www.svgrepo.com/show/374088/selenium.svg' width='25' />  
+Selenium Renderer  
+<i>(for JS-heavy sites )</i>"]
+    end
+    
+    subgraph "2. Storage & State"
+        C[(" <img src='https://www.svgrepo.com/show/353941/json.svg' width='25' />  
+<b>Raw JSON Files</b>  
+Ground Truth Storage" )]
+        D[("<img src='https://www.vectorlogo.zone/logos/redis/redis-icon.svg' width='25' />  
+<b>Redis State</b>  
+Delta Crawl Memory" )]
+    end
 
-        %% ===== Storage & State =====
-        subgraph ST[2. Storage & State]
-                C[("<img src='https://www.svgrepo.com/show/353941/json.svg' width='20' />\nRaw JSON Files")]
-                D[("<img src='https://www.vectorlogo.zone/logos/redis/redis-icon.svg' width='20' />\nRedis Hash State")]
-        end
+    subgraph "3. Enrichment"
+        E["<img src='https://www.svgrepo.com/show/452092/python.svg' width='25' />  
+Data Processor"]
+        F["<b>NLP & Scoring Engine</b>  
+Extracts IOCs & Calculates Threat Score"]
+    end
 
-        %% ===== Enrichment =====
-        subgraph EN[3. Enrichment]
-                E["<img src='https://www.svgrepo.com/show/452092/python.svg' width='20' />\nData Processor"]
-                F["NLP + IOC + Scoring"]
-        end
+    subgraph "4. Analytics"
+        G[(" <img src='https://www.vectorlogo.zone/logos/elastic/elastic-icon.svg' width='25' />  
+<b>Elasticsearch</b>  
+Search & Analytics Index" )]
+        H["<img src='https://www.vectorlogo.zone/logos/elasticco_kibana/elasticco_kibana-icon.svg' width='25' />  
+<b>Kibana</b>  
+Dashboards & Visualization"]
+    end
 
-        %% ===== Analytics =====
-        subgraph ANA[4. Analytics]
-                G[("<img src='https://www.vectorlogo.zone/logos/elastic/elastic-icon.svg' width='20' />\nElasticsearch (cti_intelligence)")]
-                H["<img src='https://www.vectorlogo.zone/logos/elasticco_kibana/elasticco_kibana-icon.svg' width='20' />\nKibana Dashboards"]
-        end
+    %% Define the data flow and connections
+    A -- "Tor Proxy" --> B
+    B -- "Saves Raw Post" --> C
+    B -- "Updates Content Hash" --> D
+    
+    C -- "Polls for New Files" --> E
+    
+    E -- "1. Sends Text" --> F
+    F -- "2. Returns Enriched Data" --> E
+    
+    E -- "3. Bulk Indexes Document" --> G
+    G -- "Serves Data to" --> H
 
-        %% Flows
-        A --> P --> B
-        B -- "Writes Raw Posts" --> C
-        B -- "Item Hash" --> D
-        C -- "Batch Poll" --> E
-        E --> F
-        F -- "Enriched Fields" --> E
-        E -->|Bulk Index| G
-        G --> H
+    %% Define the optional Selenium path with a styled link
+    B -. "Request via Selenium" .-> S
+    S -. "Returns Rendered HTML" .-> B
+    
+    %% Style the optional path to be dotted
+    linkStyle 8 stroke-dasharray: 5 5;
+    linkStyle 9 stroke-dasharray: 5 5;
 
-        %% Optional Selenium path
-        B -. "JS-required page" .-> S
-        S -. "Rendered HTML" .-> B
-
-        %% Notes
-        classDef optional stroke-dasharray: 3 3,stroke:#999,color:#444;
 ```
 
 > Note: Selenium is only invoked for pages requiring dynamic JavaScript rendering. Network traffic still routes through the Tor/Privoxy proxy layer when enabled; Selenium is not part of the core pipeline path for static/HTML-friendly forums.
