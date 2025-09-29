@@ -10,7 +10,7 @@ won't include the project root; we patch it below for convenience.
 """
 
 import sys
-import os
+import os  # used only for possible future env/path tweaks
 from pathlib import Path as _PathForImport
 import argparse
 
@@ -46,7 +46,8 @@ except ModuleNotFoundError as e:
 
 logger = logging.getLogger(__name__)
 
-# Basic logging configuration if the root logger has no handlers (when run as module)
+# Set up a default logging config ONLY if caller hasn't already done so.
+# This way library usage (importing this module) won't spam or override app logging.
 if not logging.getLogger().handlers:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
@@ -148,6 +149,8 @@ _COUNTRY_COORDINATES = {
 }
 
 def _normalize_country(raw: str) -> str:
+    # Convert a raw GPE/entity string into a canonical country name.
+    # Returns None if it isn't something we recognize.
     if not raw:
         return None
     t = raw.strip().lower()
@@ -160,6 +163,7 @@ def _normalize_country(raw: str) -> str:
     return t if t in _COUNTRY_CANONICAL else None
 
 def _extract_countries(entities):
+    # Pull out unique canonical countries from an entities list produced by NLP.
     if not entities:
         return []
     found = []
@@ -257,21 +261,20 @@ class DataProcessor:
                 file_path.rename(processed_file)
                 return True # Return True because we handled it.
 
-            # --- NEW: Clean the content and extract artifacts ---
+            # Extract + strip out structured "breach artifact" chunks (hash lines etc.)
             cleaned_content, breach_artifacts = self.nlp_processor.extract_and_clean_breach_artifacts(content)
-            # ----------------------------------------------------
 
-            # 2. Run NLP Analysis on CLEANED content
+            # 2. Run NLP on cleaned text (keeps noise down while staying reproducible)
             threat_summary = self.nlp_processor.get_threat_intelligence_summary(cleaned_content)
             victim_profile = self.nlp_processor.extract_victim_profile(data) # Pass the full data object
-            # 3. Assemble the Final Document for Elasticsearch (enhanced)
+            # 3. Build the ES document (add geo + victim structure + artifact metadata)
             countries_norm = _extract_countries(threat_summary.get('entities'))
             primary_country = countries_norm[0] if countries_norm else None
 
             # Date normalization
             normalized_date, original_date = _normalize_date(data.get("post_date"))
 
-            # Distinct length metrics
+            # Distinct length metrics (raw vs cleaned)
             raw_content_length = len(content)
             cleaned_content_length = len(cleaned_content)
 
@@ -323,8 +326,7 @@ class DataProcessor:
                 },
             }
 
-            # 4. ALWAYS try to index the document to Elasticsearch
-            # Reduce noise: only log a concise preview at DEBUG level
+            # 4. Ship to Elasticsearch (or log failure). Keep logs terse unless debug.
             if logger.isEnabledFor(logging.DEBUG):
                 preview_keys = [
                     "url",
@@ -342,7 +344,7 @@ class DataProcessor:
                 logger.error(f"Failed to index document {file_path.name}. It will remain in the raw folder.")
                 return False # The indexing failed, so we report failure.
 
-            # 5. If we get here, everything was successful. Move the file.
+            # 5. Success: archive/move the raw file so we don't reprocess.
             processed_file = self.processed_dir / file_path.name
             file_path.rename(processed_file)
             logger.info(f"Successfully processed and indexed: {file_path.name}")
@@ -359,14 +361,14 @@ class DataProcessor:
         while True:
             try:
                 # Find new files to process
-                raw_files = list(self.raw_data_dir.glob("*.json"))
+                raw_files = list(self.raw_data_dir.glob("*.json"))  # cheap directory scan
 
                 if raw_files:
                     logger.info(f"Found {len(raw_files)} files to process")
 
                     for file_path in raw_files:
                         self.process_file(file_path)
-                        time.sleep(1)  # Small delay between files
+                        time.sleep(1)  # tiny pause to avoid hammering resources
 
                 # Wait before next check
                 time.sleep(check_interval)
@@ -399,8 +401,8 @@ class DataProcessor:
             return summary
 
         logger.info(f"Processing {len(raw_files)} files...")
-        docs_to_index = []
-        processed_files_paths = [] # Keep track of files to move later
+    docs_to_index = []  # staged docs for bulk indexing
+    processed_files_paths = [] # raw file handles that correspond to docs_to_index
 
         for file_path in raw_files:
             try:
@@ -414,7 +416,7 @@ class DataProcessor:
                     file_path.rename(self.processed_dir / file_path.name)
                     continue
 
-                # Processing logic (mirrors process_file but without per-file indexing)
+                # Same logic as process_file, except we defer indexing until we collect all docs
                 cleaned_content, breach_artifacts = self.nlp_processor.extract_and_clean_breach_artifacts(content)
                 threat_summary = self.nlp_processor.get_threat_intelligence_summary(cleaned_content)
                 victim_profile = self.nlp_processor.extract_victim_profile(data)
@@ -474,7 +476,7 @@ class DataProcessor:
                 continue
 
         if docs_to_index:
-            logger.info(f"Attempting to bulk index {len(docs_to_index)} documents...")
+            logger.info(f"Attempting bulk index of {len(docs_to_index)} documents...")
             if self.es_client.connected:
                 result = self.es_client.bulk_index_documents(docs_to_index)
                 logger.info(
@@ -482,7 +484,7 @@ class DataProcessor:
                     result.get('success', 0),
                     result.get('errors', 0),
                 )
-                # Move all processed files (best-effort even if partial errors)
+                # Move all processed files regardless of partial failures (so we don't loop forever)
                 moved = 0
                 for file_path in processed_files_paths:
                     try:
@@ -503,7 +505,7 @@ class DataProcessor:
             summary["total"],
         )
 
-        # Refresh index (best-effort)
+        # Light refresh so results are queryable immediately (no-op if disconnected)
         if self.es_client.connected:
             self.es_client.refresh_index()
 
