@@ -1,5 +1,8 @@
-"""
-NLP Processor for extracting CTI entities from text using spaCy.
+"""Lightweight NLP / IOC extraction layer.
+
+Focus: single-pass entity + regex IOC collection with minimal side effects.
+Everything here is intentionally explicit so tuning is easy without hunting
+through magic helpers. Meant for pipeline usage (not a general library).
 """
 
 import re
@@ -14,10 +17,10 @@ from typing import Dict, List, Any
 logger = logging.getLogger(__name__)
 
 class CTINLPProcessor:
-    """NLP processor for extracting cyber threat intelligence entities."""
+    """Extract cyber threat intelligence signals (entities + IOCs)."""
 
     def __init__(self, config_path: str = "config/nlp_config.yaml"):
-        # Load YAML config
+        # Load YAML config (simple static settings; no live reload right now)
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = yaml.safe_load(f)
 
@@ -30,7 +33,7 @@ class CTINLPProcessor:
             logger.error(f"Could not load spaCy model: {self.model_name}")
             raise
 
-        # Preprocessing options
+    # Preprocessing flags (used only for normalized auxiliary text, NOT for offsets)
         self.lowercase = self.config.get("lowercase", True)
         self.lemmatize = self.config.get("lemmatize", True)
         self.remove_stopwords = self.config.get("remove_stopwords", True)
@@ -38,8 +41,8 @@ class CTINLPProcessor:
         # Stopwords (spaCy built-in)
         self.stopwords = STOP_WORDS if self.remove_stopwords else set()
 
-        # Setup custom entities from YAML using spaCy v3 API
-        # Add/ensure entity_ruler exists early before 'ner' so patterns can override
+        # Custom entity definitions from YAML.
+        # Ensure an entity_ruler exists (before 'ner' so patterns can win where needed).
         if 'entity_ruler' in self.nlp.pipe_names:
             self.entity_ruler = self.nlp.get_pipe('entity_ruler')
         else:
@@ -47,7 +50,7 @@ class CTINLPProcessor:
             self.entity_ruler = self.nlp.add_pipe('entity_ruler', before='ner', config={'overwrite_ents': False})
         self.setup_custom_entities()
 
-        # Precompile IOC / artifact regex patterns (broad but bounded)
+    # Precompile IOC / artifact regex patterns (try to keep false positives low)
         self.compiled_patterns = {
             'IP_ADDRESS': re.compile(r'\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b'),
             'IPV6_ADDRESS': re.compile(r'\b(?:[A-F0-9]{1,4}:){2,7}[A-F0-9]{1,4}\b', re.IGNORECASE),
@@ -68,7 +71,7 @@ class CTINLPProcessor:
             'USER_AGENT': re.compile(r'Mozilla/[0-9.]+|Chrome/[0-9.]+|Safari/[0-9.]+'),
         }
 
-        # Load regex extraction behavior config safely
+    # Regex extraction behavioural toggles (fine grained pruning/merging options)
         self.regex_cfg = self.config.get('regex_extraction', {}) or {}
         self.regex_enabled = self.regex_cfg.get('enabled', True)
         self.regex_prefer = self.regex_cfg.get('prefer', 'ruler').lower()  # 'ruler' or 'regex'
@@ -97,7 +100,7 @@ class CTINLPProcessor:
 
         logger.info(f"Regex extraction enabled={self.regex_enabled}; patterns={list(self.compiled_patterns.keys())}")
 
-        # Cache IOC mapping for reuse
+    # Map raw entity label -> structured IOC bucket key
         self.ioc_mapping = {
             "IP_ADDRESS": "ip_addresses",
             "IPV6_ADDRESS": "ipv6_addresses",
@@ -129,14 +132,14 @@ class CTINLPProcessor:
                 "pattern": [{"TEXT": {"REGEX": regex}}]
             })
 
-        # Malware families
+    # Malware families (simple exact token matches)
         for malware in self.config.get("malware_families", []):
             patterns.append({
                 "label": "MALWARE_FAMILY",
                 "pattern": [{"LOWER": malware.lower()}]
             })
 
-        # Threat actors
+    # Threat actors (multi-token sequences kept intact)
         for actor in self.config.get("threat_actors", []):
             if " " in actor:
                 pattern = [{"LOWER": word} for word in actor.lower().split()]
@@ -154,7 +157,7 @@ class CTINLPProcessor:
         """Return a normalized version of text for auxiliary analytics (NOT used for NER offsets)."""
         if not text or len(text.strip()) < 10:
             return text
-        # Lightweight tokenization without full pipeline to avoid double NER work
+    # Use make_doc (tokenizer only) to avoid running the whole pipeline twice
         doc = self.nlp.make_doc(text)
         out_tokens = []
         for token in doc:
@@ -176,7 +179,7 @@ class CTINLPProcessor:
         if not text or len(text.strip()) < 10:
             return {"entities": [], "text_length": len(text or ''), "processed": False, "normalized_text": text}
         try:
-            MAX_CHARS = 20000  # heuristic chunk size limit
+            MAX_CHARS = 20000  # heuristic chunk limit to avoid extreme memory use
             entities = []  # ruler (spaCy pipeline + entity ruler) sourced
             if len(text) <= MAX_CHARS:
                 doc = self.nlp(text)
@@ -191,7 +194,7 @@ class CTINLPProcessor:
                     } for ent in doc.ents
                 ])
             else:
-                # Chunk on sentence boundaries if possible, fallback to fixed-size slices
+                # Chunk by fixed window (kept simple; could be sentence aligned later)
                 logger.debug(f"Large text ({len(text)} chars) – applying chunked NER")
                 offset = 0
                 while offset < len(text):
@@ -211,7 +214,7 @@ class CTINLPProcessor:
             for e in entities:
                 entities_by_type.setdefault(e['label'], []).append(e)
 
-            # Regex-based extras operate on ORIGINAL text to preserve offsets
+            # Regex pass (original raw text so offsets still track)
             additional_entities = []
             if self.regex_enabled and self.compiled_patterns:
                 additional_entities = self.extract_additional_patterns(text)
@@ -246,7 +249,7 @@ class CTINLPProcessor:
     def extract_additional_patterns(self, text: str) -> List[Dict]:
         """Extract additional patterns using regex that spaCy might miss."""
         additional_entities: List[Dict] = []
-        for label, pattern in self.compiled_patterns.items():
+        for label, pattern in self.compiled_patterns.items():  # each pattern applied independently
             for match in pattern.finditer(text):
                 additional_entities.append({
                     'text': match.group(1) if label == 'PORT_NUMBER' and match.lastindex else match.group(),
@@ -274,7 +277,7 @@ class CTINLPProcessor:
         if not self.regex_drop_overlapping:
             return filtered
 
-        # Key by span + label; if conflict choose per preference
+    # Key by exact span+label+text; resolve conflicts by preferred source
         by_key = {}
         for e in filtered:
             key = (e['label'], e['start'], e['end'], e['text'].lower())
@@ -315,7 +318,7 @@ class CTINLPProcessor:
         result = self.process_text(text)
         iocs = self.extract_iocs(text, result=result)
 
-        # --- Sanitize IP addresses (remove ports, embedded tokens, dedupe) ---
+        # Clean IP list (strip ports / noisy fragments)
         if iocs.get('ip_addresses'):
             original_ips = iocs['ip_addresses']
             cleaned_ips = self._sanitize_ip_list(original_ips)
@@ -335,25 +338,25 @@ class CTINLPProcessor:
             "crypto_addresses": len(iocs.get("btc_addresses", [])) + len(iocs.get("eth_addresses", []))
         }
 
-        # --- NEW, GEOPOLITICALLY-AWARE SCORING ---
+    # Simple additive scoring (bounded to 0..100)
         
         threat_score = 0
 
-        # High-value indicators (malware, exploits)
+    # Weight high value signals
         threat_score += threat_indicators["cves"] * 50
         threat_score += threat_indicators["threat_actors"] * 30
         threat_score += threat_indicators["malware_families"] * 20
 
-        # Data leak indicators
+        # Leak intensity
         email_count = len(iocs.get("emails", []))
         if email_count > 10:
             threat_score += 40
 
-        # Geopolitical context - finding a country is valuable context
+        # Country context hints real-world targeting
         if any(e['label'] == 'GPE' for e in result.get("entities", [])):
             threat_score += 15 # Add points if a country is mentioned
 
-        # Low-value indicators
+    # Lower weight signals
         threat_score += threat_indicators["file_hashes"] * 5
         threat_score += threat_indicators["ip_addresses"] * 1
         threat_score += email_count * 0.5
@@ -382,7 +385,7 @@ class CTINLPProcessor:
         """
         if not values:
             return []
-        ipv4_pattern = re.compile(r'(?:25[0-5]|2[0-4]\d|[01]?\d\d?)(?:\.(?:25[0-5]|2[0-4]\d|[01]?\d\d?)){3}')
+    ipv4_pattern = re.compile(r'(?:25[0-5]|2[0-4]\d|[01]?\d\d?)(?:\.(?:25[0-5]|2[0-4]\d|[01]?\d\d?)){3}')  # lean IPv4 capture
         ipv6_pattern = re.compile(r'\b(?:[A-F0-9]{1,4}:){2,7}[A-F0-9]{1,4}\b', re.IGNORECASE)
         cleaned = []
         seen = set()
@@ -415,22 +418,22 @@ class CTINLPProcessor:
         # It is very specific to the format you found.
         artifact_pattern = re.compile(
             r"\[\s*Part\s*\d+\s*of\s*\d+\s*\]\[\s*[\d.]+\w+\s*\]\[\s*(SHA\d+):([a-fA-F0-9]+)\s*\]"
-        )
+        )  # intentionally tight to avoid catching random bracket noise
 
         # Find all matches
         matches = list(artifact_pattern.finditer(text))
 
         if not matches:
-            return text, []  # Return original text if no artifacts are found
+            return text, []  # nothing to do
 
-        # For each match, create a structured artifact object
+        # Build a structured record per artifact
         for match in matches:
             artifacts.append({
                 "hash_type": match.group(1),
                 "hash_value": match.group(2)
             })
 
-        # Now, remove the matched patterns from the text to clean it up
+    # Strip artifacts from body – we keep them separately in metadata
         cleaned_text = artifact_pattern.sub('', text).strip()
         
         return cleaned_text, artifacts
@@ -464,7 +467,7 @@ class CTINLPProcessor:
             return profile
 
         try:
-            # 1. Extract Victim Name and Domain (first line)
+            # 1. Victim name + domain (first line heuristic)
             # This regex is more robust, looking for a clear name at the start.
             name_match = re.search(r"^\s*([\w\s.-]+?)(?:\s*\(([\w.-]+)\))?\s*\n", text)
             if name_match:
@@ -472,7 +475,7 @@ class CTINLPProcessor:
                 if name_match.group(2):
                     profile["domain"] = name_match.group(2).strip()
 
-            # 2. Extract Date and Tags
+            # 2. Date + hashtags
             date_match = re.search(r"Date:\s*(.*)", text, re.IGNORECASE)
             if date_match:
                 profile["breach"]["date"] = date_match.group(1).strip()
@@ -481,14 +484,14 @@ class CTINLPProcessor:
             if tags_match:
                 profile["tags"] = [tag.strip() for tag in tags_match.group(1).replace("#", "").split()]
 
-            # 3. Extract Record Count from mysql block
+            # 3. Record count (mysql->count(*))
             record_count_match = re.search(r"\|\s*count\(\*\)\s*\|\s*\n\s*\+--[+-]+\s*\n\s*\|\s*([\d,]+)\s*\|", text, re.MULTILINE)
             if record_count_match:
                 # Remove commas from the number before converting to int
                 count_str = record_count_match.group(1).replace(",", "")
                 profile["breach"]["record_count"] = int(count_str)
 
-            # 4. Extract Leaked Columns from CREATE TABLE statement
+            # 4. Column names from a CREATE TABLE snippet
             create_table_match = re.search(r"CREATE TABLE\s+`?(\w+)`?\s*\((.*?)\)", text, re.DOTALL)
             if create_table_match:
                 table_name = create_table_match.group(1)
@@ -501,7 +504,7 @@ class CTINLPProcessor:
                     sql_keywords = {'primary', 'key', 'unique', 'index'}
                     profile["breach"]["leaked_columns"] = [c for c in column_matches if c.lower() not in sql_keywords]
 
-            # 5. Extract Description (heuristic: text between tags and mysql/DOWNLOAD)
+            # 5. Description slice between tags and either mysql prompt or download marker
             desc_start = -1
             desc_end = -1
             if tags_match:
@@ -519,7 +522,7 @@ class CTINLPProcessor:
                 description = text[desc_start:desc_end].strip()
                 profile["description"] = description
 
-            # 6. Determine Proof Type
+            # 6. Proof classification (db dump vs screenshot)
             if profile["breach"]["record_count"] or profile["breach"]["leaked_columns"]:
                 profile["breach"]["proof_type"] = "database_dump_text"
             elif images:
