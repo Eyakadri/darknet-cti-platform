@@ -1,6 +1,10 @@
 import yaml
 from pathlib import Path
 
+# Central config loader. Simple singleton so the rest of the code can just do:
+#   from config.config_loader import config
+# and not worry about re-reading YAML or path setup. Keeps things DRY.
+
 class Config:
     _instance = None
 
