@@ -8,10 +8,7 @@ from scrapy.exceptions import NotConfigured
 logger = logging.getLogger(__name__)
 
 class TorManager:
-    """
-    Manages the Tor controller connection for a Scrapy project.
-    This class is designed to be run as a Scrapy Extension.
-    """
+    """Scrapy extension wrapping Tor control port operations (NEWNYM, connect)."""
     def __init__(self, settings):
         if not settings.getbool('TOR_MANAGER_ENABLED', True):
             raise NotConfigured

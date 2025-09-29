@@ -7,11 +7,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class StateManager:
-    """
-    Manages crawling state using Redis for high-performance delta crawling.
-    An instance of this class is created by middlewares or pipelines that need it,
-    and it gets its configuration from the Scrapy settings object.
-    """
+    """Redis-backed delta crawl state (URL -> latest content hash)."""
     # Use a prefix for all keys to avoid collisions if Redis is used for other purposes.
     REDIS_KEY_PREFIX = "darknet_crawler:state:"
 
@@ -40,18 +36,11 @@ class StateManager:
         return f"{self.REDIS_KEY_PREFIX}{url}"
 
     def get_stored_hash(self, url: str) -> Optional[str]:
-        """
-        Retrieves the last known content hash for a given URL from Redis.
-
-        Returns:
-            The stored hash as a string, or None if the URL is not in the state.
-        """
+        """Return previously stored hash for URL or None."""
         return self.redis_client.get(self._get_key(url))
 
     def update_crawl_state(self, url: str, new_content_hash: str):
-        """
-        Updates the state for a URL in Redis by storing its latest content hash.
-        """
+        """Persist new hash so future visits can detect unchanged pages."""
         try:
             self.redis_client.set(self._get_key(url), new_content_hash)
             logger.debug(f"Updated state for {url} with hash {new_content_hash[:8]}...")

@@ -10,10 +10,7 @@ import requests # We need requests for the test_session method
 logger = logging.getLogger(__name__)
 
 class SessionManager:
-    """
-    Manages session cookies and authentication tokens, with methods
-    callable by both the crawler and helper scripts.
-    """
+    """Lightweight cookie/header session persistence (JSON file backed)."""
     def __init__(self, settings):
         """Initializes the SessionManager using Scrapy settings."""
         sessions_file = settings.get('SESSIONS_FILE_PATH', 'data/sessions.json')

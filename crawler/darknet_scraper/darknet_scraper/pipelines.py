@@ -1,4 +1,10 @@
-# pipelines.py for the darknet_scraper project
+"""Pipelines for post-processing scraped items.
+
+Order suggestion (enable in settings):
+    1. DuplicatesPipeline        - in-memory filtering within run
+    2. StateUpdatePipeline       - persist hash to Redis for delta crawling
+    3. RawDataStoragePipeline    - write JSON artifact consumed by processor
+"""
 
 import json
 import hashlib
@@ -48,7 +54,7 @@ class StateUpdatePipeline:
     def from_crawler(cls, crawler):
         return cls(crawler.settings)
 
-    def process_item(self, item, spider):
+    def process_item(self, item, spider):  # write latest content hash for delta comparisons
         if not self.enabled:
             return item
 
@@ -82,7 +88,7 @@ class RawDataStoragePipeline:
         return cls(crawler.settings)
 
     def process_item(self, item, spider):
-        """Store the complete item as a JSON file."""
+        """Serialize item as JSON (acts like a lightweight queue message)."""
         try:
             content_hash = item.get('content_hash')
             if not content_hash:
