@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Quick Elasticsearch health & index check."""
+"""Quick Elasticsearch reachability + index existence probe.
+
+Intended as a fast sanity check during local dev or container startup.
+Keeps output short so it can be used in health logs.
+"""
 import sys
 from elasticsearch import Elasticsearch
 from config.config_loader import config
@@ -10,6 +14,7 @@ def main():
     print(f"Using hosts: {hosts}")
     print(f"Index: {index}")
     try:
+        # timeout kept small so failed clusters return quickly
         es = Elasticsearch(hosts=hosts, timeout=10)
         if not es.ping():
             print("PING FAILED: cluster not reachable")
@@ -24,6 +29,7 @@ def main():
             print(f"Index '{index}' does NOT exist yet.")
         return 0
     except Exception as e:
+        # Keep generic (detailed trace not needed for health checks)
         print(f"ERROR: {e}")
         return 1
 
