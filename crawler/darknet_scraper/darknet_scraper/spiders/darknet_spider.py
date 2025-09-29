@@ -1,4 +1,11 @@
-# crawler/darknet_scraper/darknet_scraper/spiders/darknet_spider.py
+"""Config-driven spider for darknet CTI sources.
+
+Design notes:
+    * Each target site described in settings.TARGET_SITES (url + rules)
+    * parse_list_page finds content + pagination links; parse_item_page extracts posts
+    * Conservative heuristics + fallbacks so malformed pages still yield something
+    * Keeps BeautifulSoup for flexible HTML cleanup (Scrapy selectors for structure)
+"""
 
 import scrapy
 import hashlib
@@ -10,17 +17,14 @@ from bs4 import BeautifulSoup
 from ..items import CtiItem
 
 class DarknetSpider(scrapy.Spider):
-    """
-    A config-driven spider that crawls darknet sites for CTI.
-    Its behavior is controlled by the 'target_sites' list in the project settings.
-    """
+    """Crawl configured darknet/forum sources and emit per-post items."""
     name = 'darknet'
 
     @classmethod
     def from_crawler(cls, crawler, *args, **kwargs):
         spider = super(DarknetSpider, cls).from_crawler(crawler, *args, **kwargs)
         # Load the structured list of site objects from settings
-        spider.target_sites = crawler.settings.getlist('TARGET_SITES')
+    spider.target_sites = crawler.settings.getlist('TARGET_SITES')  # list[dict]
         # Dynamically build the list of allowed domains from the config
         spider.allowed_domains = []
         from urllib.parse import urlparse
@@ -33,7 +37,7 @@ class DarknetSpider(scrapy.Spider):
         return spider
 
     def start_requests(self):
-        self.logger.info("Starting requests based on target_sites configuration...")
+    self.logger.info("Starting requests based on target_sites configuration...")
         for site_config in self.target_sites:
             self.logger.info(f"Generating initial request for: {site_config['name']}")
             meta = {'site_config': site_config}
@@ -58,12 +62,12 @@ class DarknetSpider(scrapy.Spider):
         rules = site_config.get('rules', {})
 
         # --- Helper utilities (kept inside method to avoid polluting class scope) ---
-        def split_selectors(sel: str):
+    def split_selectors(sel: str):
             """Split a comma-delimited CSS selector string into clean individual selectors.
             Handles embedded commas by simple split – acceptable for current config usage."""
             return [s.strip() for s in sel.split(',') if s.strip()]
 
-        def clean_links(raw_list):
+    def clean_links(raw_list):
             cleaned = []
             for href in raw_list:
                 if not href:
@@ -102,7 +106,7 @@ class DarknetSpider(scrapy.Spider):
             return ordered
 
         # 1. Find and follow links to the actual content pages
-        follow_selector = rules.get('follow_links')
+    follow_selector = rules.get('follow_links')  # CSS selectors for content links
         if follow_selector:
             raw_links = []
             for sel in split_selectors(follow_selector):
@@ -121,7 +125,7 @@ class DarknetSpider(scrapy.Spider):
                 )
 
         # 2. Find and follow the "next page" link for pagination
-        pagination_selector = rules.get('pagination')
+    pagination_selector = rules.get('pagination')  # CSS selectors for next-page links
         if pagination_selector:
             candidates = []
             for sel in split_selectors(pagination_selector):
@@ -145,12 +149,12 @@ class DarknetSpider(scrapy.Spider):
 
     def parse_item_page(self, response):
         """Parses a thread page and yields one item per individual post/comment."""
-        site_config = response.meta['site_config']
+    site_config = response.meta['site_config']
         rules = site_config.get('rules', {})
         self.logger.info(f"Parsing thread page (per-post extraction): {response.url}")
 
         # --- Helper: date pattern extraction (basic, no external deps) ---
-        def extract_date_from_text(text: str):
+    def extract_date_from_text(text: str):
             """Attempt to find a plausible date string in free text and return ISO format if parsed.
             Supports formats like:
               2023-10-27, 2023/10/27
@@ -199,6 +203,50 @@ class DarknetSpider(scrapy.Spider):
                         continue
             return ''
 
+    def normalize_forum_datetime(raw_text: str):
+            """Extract a clean forum post date-time from noisy author blocks like:
+            'Post by username » Fri Oct 06, 2017 4:33 pm'
+            Returns an ISO 8601 UTC-like string (no real TZ info available so assumed as naive UTC) or ''."""
+            if not raw_text:
+                return ''
+            txt = ' '.join(raw_text.split())  # collapse whitespace
+            # Common phpBB style: Fri Oct 06, 2017 4:33 pm
+            # Allow full or abbreviated month names, optional leading zero on day, 12h clock with am/pm
+            pattern = re.compile(r'(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+([A-Za-z]{3,9})\s+(\d{1,2}),\s+(\d{4})\s+(\d{1,2}):(\d{2})\s+(am|pm)', re.IGNORECASE)
+            m = pattern.search(txt)
+            candidate = None
+            if m:
+                candidate = m.group(0)
+            else:
+                # Fallback: already ISO style date present
+                iso_match = re.search(r'\b20\d{2}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b', txt)
+                if iso_match:
+                    candidate = iso_match.group(0)
+            if not candidate:
+                return ''
+            # Try parse with multiple formats
+            fmts = [
+                '%a %b %d, %Y %I:%M %p',
+                '%a %B %d, %Y %I:%M %p',
+                '%Y-%m-%d %H:%M',
+                '%Y-%m-%d %H:%M:%S',
+                '%Y-%m-%d'
+            ]
+            for fmt in fmts:
+                try:
+                    # Remove ordinal commas for parsing forms without them
+                    cleaned = candidate.replace('  ', ' ').strip()
+                    dt = datetime.strptime(cleaned, fmt)
+                    # Represent as ISO (assume naive => UTC)
+                    if '%H' in fmt or '%I' in fmt:
+                        return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+                    else:
+                        # Date only
+                        return dt.strftime('%Y-%m-%dT00:00:00Z')
+                except Exception:
+                    continue
+            return ''
+
         # Heuristic + config-based detection: if this is actually a forum index / list page, reroute.
         thread_url_markers = rules.get('thread_url_contains', [])  # list of substrings that indicate a thread
         if isinstance(thread_url_markers, str):
@@ -230,9 +278,27 @@ class DarknetSpider(scrapy.Spider):
         thread_title = ''
         title_sel = rules.get('thread_title') or rules.get('post_title')
         if title_sel:
+            # Support comma-separated selector list without causing duplicate nested grabs
+            selectors = [s.strip() for s in title_sel.split(',') if s.strip()]
+            collected = []
             try:
-                raw_title_bits = response.css(title_sel + "::text, " + title_sel + " ::text").getall()
-                thread_title = (" ".join(t.strip() for t in raw_title_bits if t and t.strip()) or "").strip()
+                for sel in selectors:
+                    bits = response.css(sel + '::text, ' + sel + ' ::text').getall()
+                    for b in bits:
+                        txt = (b or '').strip()
+                        if not txt:
+                            continue
+                        # avoid trivial duplicates
+                        if txt not in collected:
+                            collected.append(txt)
+                thread_title = ' '.join(collected).strip()
+                # Collapse exact double full repetition (e.g., 'Title Title')
+                if thread_title:
+                    halves = thread_title.split()
+                    if len(halves) % 2 == 0:
+                        mid = len(halves)//2
+                        if halves[:mid] == halves[mid:]:
+                            thread_title = ' '.join(halves[:mid])
             except Exception:
                 thread_title = ''
         if not thread_title:
@@ -248,7 +314,7 @@ class DarknetSpider(scrapy.Spider):
 
         # Container selector for posts
         post_container_sel = rules.get('post_container') or '.message, .post'
-        post_nodes = response.css(post_container_sel)
+    post_nodes = response.css(post_container_sel)
         if not post_nodes:
             self.logger.warning(f"No post containers found with selector '{post_container_sel}' on {response.url}. Falling back to whole page as one item.")
             # Instead of passing HtmlResponse directly (which lacks attrib/css expectations in loop)
@@ -285,7 +351,7 @@ class DarknetSpider(scrapy.Spider):
             parsed_path = urlparse(response.url).path.rstrip('/')
             thread_id = hashlib.sha1(parsed_path.encode('utf-8')).hexdigest()[:16]
 
-        for idx, node in enumerate(post_nodes, start=1):
+    for idx, node in enumerate(post_nodes, start=1):  # yield one item per post block
             item = CtiItem()
             item['url'] = response.url
             item['site_category'] = site_config.get('category', 'unknown')
@@ -311,8 +377,22 @@ class DarknetSpider(scrapy.Spider):
             # Author
             author_text = ''
             if author_sel:
-                author_bits = node.css(author_sel + '::text, ' + author_sel + ' ::text').getall()
-                author_text = (" ".join(a.strip() for a in author_bits if a and a.strip()) or '').strip()
+                # Split multi-selectors to reduce nested duplication (.a, .a span) etc.
+                selectors = [s.strip() for s in author_sel.split(',') if s.strip()]
+                author_bits = []
+                for sel in selectors:
+                    bits = node.css(sel + '::text, ' + sel + ' ::text').getall()
+                    for b in bits:
+                        txt = (b or '').strip()
+                        if not txt:
+                            continue
+                        if txt not in author_bits:
+                            author_bits.append(txt)
+                author_text = (' '.join(author_bits)).strip()
+                # Remove duplicated sequence like 'ethical hacker ethical hacker'
+                words = author_text.split()
+                if len(words) % 2 == 0 and words[:len(words)//2] == words[len(words)//2:]:
+                    author_text = ' '.join(words[:len(words)//2])
             item['author'] = author_text
 
             # Date/time
@@ -331,6 +411,14 @@ class DarknetSpider(scrapy.Spider):
                         post_date = derived
                     else:
                         post_date = ''  # discard label
+                # Additional normalization for forum-style combined author/date lines
+                normalized_dt = normalize_forum_datetime(post_date)
+                if not normalized_dt:
+                    # Sometimes full author line text got captured; try using full node text
+                    full_node_text = ' '.join((node.css(date_sel + '::text').getall() or []))
+                    normalized_dt = normalize_forum_datetime(full_node_text)
+                if normalized_dt:
+                    post_date = normalized_dt
             if not post_date:
                 # global heuristic fallback (single date per page) – acceptable for leak sites
                 inferred_page_date = extract_date_from_text(response.text)
@@ -391,7 +479,5 @@ class DarknetSpider(scrapy.Spider):
                 self.logger.debug(f"Skipping empty post {post_id} on {response.url}")
 
     def handle_error(self, failure):
-        """
-        Handles request errors.
-        """
+        """Error callback for failed Requests (logs URL + reason)."""
         self.logger.error(f"Request failed: {failure.request.url} - {failure.value}")
