@@ -23,44 +23,52 @@ This platform automates the entire CTI lifecycle: from ethical collection on dar
 
 ## ⚙️ Project Flow
 ```mermaid
-graph TD
-    subgraph "1. Collection"
-        A["<img src='https://www.svgrepo.com/show/445278/tor-browser.svg' width='25' />  
-Darknet Sources"]
-        B["<img src='https://www.svgrepo.com/show/374071/scrapy.svg' width='25' />  
-Scrapy Crawler"]
-    end
-    
-    subgraph "2. Storage & State"
-        C[(" <img src='https://www.svgrepo.com/show/353941/json.svg' width='25' />  
-Raw JSON Files" )]
-        D[("<img src='https://www.vectorlogo.zone/logos/redis/redis-icon.svg' width='25' />  
-Redis State" )]
-    end
+flowchart TD
+        %% ===== Collection Layer =====
+        subgraph COL[1. Collection]
+                A["<img src='https://www.svgrepo.com/show/445278/tor-browser.svg' width='22' />\nDarknet Sources"]
+                P[("Tor / Privoxy\nSOCKS Proxy")]
+                B["<img src='https://www.svgrepo.com/show/374071/scrapy.svg' width='22' />\nScrapy Crawler"]
+                S[["Selenium Headless\n(Only if JS needed)"]]
+        end
 
-    subgraph "3. Enrichment"
-        E["<img src='https://www.svgrepo.com/show/452092/python.svg' width='25' />  
-Data Processor"]
-        F["NLP & Scoring"]
-    end
+        %% ===== Storage & State =====
+        subgraph ST[2. Storage & State]
+                C[("<img src='https://www.svgrepo.com/show/353941/json.svg' width='20' />\nRaw JSON Files")]
+                D[("<img src='https://www.vectorlogo.zone/logos/redis/redis-icon.svg' width='20' />\nRedis Hash State")]
+        end
 
-    subgraph "4. Analytics"
-        G[(" <img src='https://www.vectorlogo.zone/logos/elastic/elastic-icon.svg' width='25' />  
-Elasticsearch" )]
-        H["<img src='https://www.vectorlogo.zone/logos/elasticco_kibana/elasticco_kibana-icon.svg' width='25' />  
-Kibana Dashboard"]
-    end
+        %% ===== Enrichment =====
+        subgraph EN[3. Enrichment]
+                E["<img src='https://www.svgrepo.com/show/452092/python.svg' width='20' />\nData Processor"]
+                F["NLP + IOC + Scoring"]
+        end
 
-    A -- "Tor & Selenium" --> B
-    B -- "Writes Raw Post" --> C
-    B -- "Updates Hash" --> D
-    C -- "Polls for New Files" --> E
-    E --> F
-    F -- "Enriched Document" --> E
-    E -- "Indexes Document" --> G
-    G -- "Serves Data to" --> H
+        %% ===== Analytics =====
+        subgraph ANA[4. Analytics]
+                G[("<img src='https://www.vectorlogo.zone/logos/elastic/elastic-icon.svg' width='20' />\nElasticsearch (cti_intelligence)")]
+                H["<img src='https://www.vectorlogo.zone/logos/elasticco_kibana/elasticco_kibana-icon.svg' width='20' />\nKibana Dashboards"]
+        end
 
+        %% Flows
+        A --> P --> B
+        B -- "Writes Raw Posts" --> C
+        B -- "Item Hash" --> D
+        C -- "Batch Poll" --> E
+        E --> F
+        F -- "Enriched Fields" --> E
+        E -->|Bulk Index| G
+        G --> H
+
+        %% Optional Selenium path
+        B -. "JS-required page" .-> S
+        S -. "Rendered HTML" .-> B
+
+        %% Notes
+        classDef optional stroke-dasharray: 3 3,stroke:#999,color:#444;
 ```
+
+> Note: Selenium is only invoked for pages requiring dynamic JavaScript rendering. Network traffic still routes through the Tor/Privoxy proxy layer when enabled; Selenium is not part of the core pipeline path for static/HTML-friendly forums.
 
 ### 🔑 Key Features
 - Per-post granularity → fine CTI extraction, not just thread dumps
