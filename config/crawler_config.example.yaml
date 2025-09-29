@@ -1,0 +1,65 @@
+# Public example crawler configuration (sanitized)
+# Copy to crawler_config.local.yaml and fill in real target_sites.
+
+tor:
+  proxy_host: 127.0.0.1
+  proxy_port: 8118
+  control_port: 9051
+  control_password: null  # set via env if needed
+  circuit_refresh_interval: 300
+  max_circuit_failures: 5
+
+scrapy:
+  user_agent: "Mozilla/5.0 (X11; Linux x86_64; rv:115.0) Gecko/20100101 Firefox/115.0"
+  download_delay: 3
+  randomize_download_delay: 0.5
+  concurrent_requests: 1
+  retry_times: 3
+  retry_http_codes: [500, 502, 503, 504, 408, 429]
+
+selenium:
+  render_timeout: 300
+
+redis:
+  host: 127.0.0.1
+  port: 6379
+  db: 0
+
+data_storage:
+  hash_algorithm: sha256
+  raw_dir: data/raw
+  processed_dir: data/processed
+
+# Redacted target site definitions. Replace placeholders with actual .onion values
+# in your crawler_config.local.yaml which must NOT be committed.
+
+target_sites:
+  - name: "Leak Site A"
+    url: "http://<leak-site-a>.onion/"
+    category: "data_leak_site"
+    use_selenium: false
+    rules:
+      follow_links: "maincontent ol li h4 a"
+      pagination: "p.pagination-dir a"
+      thread_title: "h4 b a"
+      post_container: "maincontent"
+      post_id_attr: null
+      post_author: null
+      post_date: "div b"
+      post_content: "mainarticle"
+      thread_url_contains: null
+
+  # - name: "Forum Example"
+  #   url: "http://<forum-example>.onion/"
+  #   category: "forum"
+  #   use_selenium: true
+  #   rules:
+  #     follow_links: ".postBoard .item a.title"
+  #     pagination: ".pagination a.next"
+  #     thread_title: ".postTop .title-text"
+  #     post_container: ".item, .comment"
+  #     post_id_attr: "id"
+  #     post_author: ".top .username"
+  #     post_date: ".timestamp"
+  #     post_content: ".postContent, .commentBody"
+  #     thread_url_contains: "thread/"
