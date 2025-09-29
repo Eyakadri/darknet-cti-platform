@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""
-Session Helper Tool for manually managing sessions after solving CAPTCHAs.
+"""CLI helper for managing authenticated session cookies.
 
-Usage:
-    python session_helper.py add <domain> --cookies "cookie_string" [--headers "header_string"] [--expires 24]
-    python session_helper.py list
-    python session_helper.py test <domain> <test_url>
-    python session_helper.py remove <domain>
-    python session_helper.py cleanup
+Why this exists:
+    * Some darknet / leak portals require manual CAPTCHA/login. Once solved,
+        you can copy browser cookies and feed them here so the crawler rides
+        an authenticated session seamlessly.
+    * Keeps session state in a simple JSON file (no DB needed) and reuses
+        the same SessionManager class the crawler uses.
+
+Quick usage:
+    Add:    python session_helper.py add example.onion --cookies "sid=abc; csrftoken=xyz"
+    List:   python session_helper.py list
+    Test:   python session_helper.py test example.onion http://example.onion/forum
+    Remove: python session_helper.py remove example.onion
+    Cleanup expired: python session_helper.py cleanup
 """
 
 import sys
@@ -21,8 +27,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 from crawler.darknet_scraper.darknet_scraper.session_manager import SessionManager
 from scrapy.settings import Settings
 
-# Create a dummy Scrapy settings object to configure the SessionManager
-# This makes the helper independent of the main crawler's config files
+# Minimal synthetic Scrapy settings so we can reuse SessionManager without
+# spinning up the full crawler stack.
 scrapy_settings = Settings({
     'SESSIONS_FILE_PATH': 'data/sessions.json'
 })
@@ -31,7 +37,7 @@ scrapy_settings = Settings({
 session_manager = SessionManager(scrapy_settings)
 
 def add_session(args):
-    """Add a new session."""
+    """Add a new session (cookies + optional headers)."""
     try:
         
         # Parse headers if provided
@@ -72,7 +78,7 @@ def add_session(args):
         print(f"✗ Error adding session: {e}")
 
 def list_sessions(args):
-    """List all sessions."""
+    """Print a table overview of current sessions (ACTIVE/EXPIRED)."""
     try:
         sessions = session_manager.list_sessions()
         
@@ -98,7 +104,7 @@ def list_sessions(args):
 
 
 def test_session(args):
-    """Test a session."""
+    """Perform a live request through Tor proxy to confirm session works."""
     try:
         print(f"Testing session for {args.domain}...")
         
@@ -114,7 +120,7 @@ def test_session(args):
 
 
 def remove_session(args):
-    """Remove a session."""
+    """Delete a stored session by domain key."""
     try:
         session_manager.remove_session(args.domain)
         print(f"✓ Session removed for {args.domain}")
@@ -124,7 +130,7 @@ def remove_session(args):
 
 
 def cleanup_sessions(args):
-    """Clean up expired sessions."""
+    """Purge expired sessions from file (keeps file tidy)."""
     try:
         session_manager.cleanup_expired_sessions()
         print("✓ Expired sessions cleaned up")
@@ -134,7 +140,7 @@ def cleanup_sessions(args):
 
 
 def show_help():
-    """Show detailed help with examples."""
+    """Verbose help / cookbook examples (mirrors docstring)."""
     help_text = """
 Session Helper Tool - Manage crawler sessions after solving CAPTCHAs
 
