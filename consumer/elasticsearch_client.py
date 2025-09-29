@@ -1,474 +1,383 @@
-"""Elasticsearch client for indexing and querying CTI data.
-
-Key improvements in this refactor:
- - Added robust `connect` method with retries & ping validation.
- - Added `connection_required` decorator to gracefully handle offline state.
- - Safe index creation only when connected.
- - Avoid sending `id=None` to ES (skip ID if missing).
- - Bulk indexing now omits `_id` when absent and returns consistent structure.
- - Added health / availability helper methods.
- - Defensive guards for every public method when ES is unavailable.
- - Removed unused imports & improved type hints & logging consistency.
-"""
-
 import logging
-from datetime import datetime
-from functools import wraps
-from typing import Dict, List, Any, Callable, Optional, TypeVar
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Iterable, List
 
-from elasticsearch import Elasticsearch, ConnectionError as ESConnectionError
-from elasticsearch.helpers import bulk
+
+# Import the class symbol directly so tests can monkeypatch
+from elasticsearch import Elasticsearch  # type: ignore
 
 logger = logging.getLogger(__name__)
 
-F = TypeVar("F", bound=Callable[..., Any])
-
-
-def connection_required(method: F) -> F:  # type: ignore
-    """Decorator to ensure the Elasticsearch client is connected before executing.
-
-    If not connected, logs a warning and returns a safe default based on method name.
-    """
-    @wraps(method)
-    def wrapper(self: "CTIElasticsearchClient", *args: Any, **kwargs: Any):  # type: ignore
-        if self.es is None:
-            logger.warning(
-                "Elasticsearch client not connected; skipping call to %s", method.__name__
-            )
-            # Safe defaults depending on expected return type
-            if method.__name__.startswith("search"):
-                return {"hits": {"total": {"value": 0}, "hits": []}}
-            if method.__name__.startswith("get_"):
-                return {}
-            if method.__name__.startswith("delete_"):
-                return 0
-            return False
-        return method(self, *args, **kwargs)
-
-    return wrapper  # type: ignore
 
 class CTIElasticsearchClient:
-    """Elasticsearch client for CTI data indexing and querying.
+    """Elasticsearch client wrapper used by the pipeline.
 
-    elastic_config is now optional – when omitted we attempt to pull values from
-    the global `config` singleton (config.config_loader). This makes usage
-    simpler for scripts that already load central configuration and resolves
-    the previous runtime error where the client was constructed with no args.
+    Goals:
+    - Keep a very small public surface (index_document only for now)
+    - Be resilient when ES is not running (caller can check .connected)
+    - Stay backward-compatible with earlier tests that passed a config dict.
+
+    Parameters
+    ----------
+    elastic_config : dict | None
+        Optional configuration. Supported shape:
+        {
+          "connection": {"hosts": ["http://localhost:9200"], "timeout": 10},
+          "index_name": "cti_intelligence"
+        }
     """
-    
-    def __init__(self, elastic_config: Optional[Dict[str, Any]] = None):
-        # Late import to avoid circular dependency if config itself wants ES
-        if elastic_config is None:
-            try:  # type: ignore
-                from config.config_loader import config as global_config  # local import
-                elastic_section = getattr(global_config, 'elastic', {}) or {}
-                # Accept legacy keys
-                hosts = (elastic_section.get('elasticsearch', {}) or elastic_section).get('hosts')
-                index = (elastic_section.get('elasticsearch', {}) or elastic_section).get('index')
-                elastic_config = {
-                    'connection': {
-                        'hosts': hosts or getattr(global_config, 'ELASTICSEARCH_HOSTS', ['http://localhost:9200']),
-                        'retries': 3,
-                        'timeout': 10
-                    },
-                    'index_name': index or getattr(global_config, 'ELASTICSEARCH_INDEX', 'cti_intelligence')
-                }
-            except Exception:
-                # Fallback to sane defaults
-                elastic_config = {
-                    'connection': {
-                        'hosts': ['http://localhost:9200'],
-                        'retries': 3,
-                        'timeout': 10
-                    },
-                    'index_name': 'cti_intelligence'
-                }
 
-        es_conn_details = (elastic_config or {}).get("connection", {})
-        self.hosts: List[str] = es_conn_details.get("hosts", ["http://localhost:9200"])
-        self.index_name: str = (elastic_config or {}).get("index_name", "cti_intelligence")
-        self.max_retries: int = int(es_conn_details.get("retries", 3))
-        self.timeout: int = int(es_conn_details.get("timeout", 10))
+    def __init__(
+        self,
+        elastic_config: Optional[Dict[str, Any]] = None,
+        es_client: Optional[Elasticsearch] = None,
+    ):
+        """Create a new Elasticsearch wrapper.
 
-        self.es: Optional[Elasticsearch] = None
+        Parameters
+        ----------
+        elastic_config : dict | None
+            Optional configuration. Shape (example):
+            {
+              "connection": {
+                "hosts": ["http://localhost:9200"],
+                "timeout": 10,
+                "api_key": ("id","key"),
+                "basic_auth": ("user","pass"),
+                "bearer_auth": "token",
+                "verify_certs": True,
+                "ca_certs": "/path/to/ca.pem"
+              },
+              "index_name": "cti_intelligence"
+            }
+        es_client : Elasticsearch | None
+            Pre-instantiated low-level client (mainly for tests / dependency injection).
+        """
+        elastic_config = elastic_config or {}
+        conn = elastic_config.get("connection", {}) or {}
+        self.hosts = conn.get("hosts", ["http://localhost:9200"])
+        self.timeout = int(conn.get("timeout", 10))
+        self.index_name = elastic_config.get("index_name", "cti_intelligence")
+
+        # Extract optional auth/TLS related parameters (whitelist for clarity)
+        self._extra_conn_args: Dict[str, Any] = {}
+        for key in (
+            "api_key",
+            "basic_auth",
+            "bearer_auth",
+            "verify_certs",
+            "ca_certs",
+            "ssl_show_warn",
+            "request_timeout",  # allow override
+        ):
+            if key in conn:
+                self._extra_conn_args[key] = conn[key]
+
+        self.es: Optional[Elasticsearch] = es_client
         self.connected: bool = False
 
-        self.connect()
+        if self.es is None:
+            self._connect()
+        else:  # Assume injected client already configured
+            try:
+                self.connected = bool(self.es.ping())
+            except Exception:
+                self.connected = False
+
         if self.connected:
             self.create_index_if_not_exists()
 
+    # Internal helpers
+    def _connect(self) -> None:
+        """Attempt a single connection to Elasticsearch using current config."""
+        try:
+            # Allow request_timeout override via _extra_conn_args
+            rt = self._extra_conn_args.get("request_timeout", self.timeout)
+            self.es = Elasticsearch(self.hosts, request_timeout=rt, **self._extra_conn_args)
+            if self.es.ping():
+                self.connected = True
+                logger.info("Elasticsearch connected (hosts=%s)", self.hosts)
+            else:
+                raise ConnectionError("Ping to Elasticsearch failed")
+        except Exception as exc:  # pragma: no cover (network/ES specific branches)
+            self.es = None
+            self.connected = False
+            logger.error("Failed to connect to Elasticsearch: %s (%s)", exc, exc.__class__.__name__)
+
     # ------------------------------------------------------------------
-    # Connection & health utilities
+    # Public connection management helpers
     # ------------------------------------------------------------------
-    def connect(self) -> None:
-        """Attempt to connect to Elasticsearch with retry logic."""
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                self.es = Elasticsearch(self.hosts, request_timeout=self.timeout)
-                if self.es.ping():  # Simple health check
-                    self.connected = True
-                    logger.info(
-                        "Connected to Elasticsearch at %s (attempt %d)", self.hosts, attempt
-                    )
-                    return
-                else:
-                    raise ESConnectionError("Ping to Elasticsearch failed")
-            except Exception as exc:  # Broad on purpose: ES raises varied exceptions
-                logger.warning(
-                    "Elasticsearch connection attempt %d/%d failed: %s", attempt, self.max_retries, exc
-                )
-        # If we reach here, all attempts failed
-        self.es = None
+    def reconnect(self) -> bool:
+        """Force a reconnect attempt. Returns True if connected afterwards."""
+        self._connect()
+        return self.connected
+
+    def close(self) -> None:
+        """Close underlying transport (best-effort)."""
+        if self.es is not None:
+            try:  # pragma: no cover (network specifics)
+                self.es.transport.close()  # type: ignore[attr-defined]
+            except Exception:
+                pass
         self.connected = False
-        logger.error("Failed to connect to Elasticsearch after %d attempts", self.max_retries)
 
-    def is_available(self) -> bool:
-        """Return True if connected and ping succeeds (cheap health check)."""
-        if self.es is None:
+    def ping(self) -> bool:
+        """Return True if cluster responds; updates connected flag."""
+        if not self.es:
             return False
         try:
-            return bool(self.es.ping())
+            self.connected = bool(self.es.ping())
         except Exception:
-            return False
+            self.connected = False
+        return self.connected
 
-    def refresh_index(self) -> bool:
-        """Force a refresh of the index to make recent writes searchable sooner."""
-        if self.es is None:
+    def create_index_if_not_exists(self) -> None:
+        if not self.connected or not self.es:
+            return
+        try:
+            # Some mocks may provide indices as a simple object already
+            indices_client = getattr(self.es, "indices", None)
+            if indices_client is None:
+                logger.debug(
+                    "Elasticsearch client has no 'indices' attribute (mock?) - skipping index creation"
+                )
+                return
+            exists_fn = getattr(indices_client, "exists", None)
+            if callable(exists_fn) and not exists_fn(index=self.index_name):
+                # We rely on an external index template (cti_template) for mappings/settings.
+                # Leaving explicit create logic commented for future explicit index creation if desired.
+                # body = {"settings": {"number_of_shards": 1, "number_of_replicas": 0}, "mappings": self.get_index_mapping()}
+                # create_fn = getattr(indices_client, "create", None)
+                # if callable(create_fn):
+                #     create_fn(index=self.index_name, body=body)
+                #     logger.info("Created index '%s'", self.index_name)
+                # else:
+                #     logger.debug("No 'create' method on indices object (mock?) - cannot create index")
+                logger.info(
+                    "Index does not exist. It will be created automatically by Elasticsearch using the 'cti_template'."
+                )
+        except Exception as exc:  # pragma: no cover
+            logger.error("Failed ensuring index '%s': %s", self.index_name, exc)
+
+    def index_document(self, doc_data: Dict[str, Any]) -> bool:
+        """Index a single document.
+
+        Returns
+        -------
+        bool
+            True on success, False otherwise.
+        """
+        if not self.connected or not self.es:
+            logger.error("Cannot index document: Not connected to Elasticsearch.")
             return False
         try:
-            self.es.indices.refresh(index=self.index_name)
+            # Work on a shallow copy so caller dict is not mutated unexpectedly.
+            doc = dict(doc_data)
+            processed_ts = datetime.now(timezone.utc).isoformat()
+            doc.setdefault("processed_at", processed_ts)
+            doc.setdefault("@timestamp", processed_ts)
+            if "content" in doc and "content_length" not in doc:
+                try:
+                    doc["content_length"] = len(doc["content"])  # fallback derivation
+                except Exception:
+                    pass
+            doc_id = doc.get("content_hash")
+            try:
+                self.es.index(index=self.index_name, id=doc_id, document=doc)  # type: ignore[arg-type]
+            except TypeError:  # fallback for older client versions
+                self.es.index(index=self.index_name, id=doc_id, body=doc)  # type: ignore
+            logger.debug("Indexed document index=%s id=%s", self.index_name, doc_id)
             return True
         except Exception as exc:
-            logger.error("Failed to refresh index '%s': %s", self.index_name, exc)
+            logger.error(
+                "Failed to index document %s: %s", doc_data.get("content_hash"), exc
+            )
             return False
-    
-    def create_index_if_not_exists(self) -> None:
-        """Create index with proper mappings if it doesn't exist (idempotent)."""
-        if self.es is None:
-            logger.debug("Skipping index creation; Elasticsearch not connected.")
-            return
 
-        try:
-            if not self.es.indices.exists(index=self.index_name):
-                mapping = self.get_index_mapping()
-                body = {
-                    "settings": {
-                        "number_of_shards": 1,
-                        "number_of_replicas": 0,
-                        "analysis": {
-                            "analyzer": {
-                                "cti_analyzer": {
-                                    "type": "custom",
-                                    "tokenizer": "standard",
-                                    "filter": ["lowercase", "stop"],
-                                }
-                            }
-                        },
-                    },
-                    "mappings": mapping,
+    # ------------------------------------------------------------------
+    # Bulk operations
+    # ------------------------------------------------------------------
+    def bulk_index_documents(self, docs: Iterable[Dict[str, Any]]) -> Dict[str, int]:
+        """Bulk index a collection of documents.
+
+        Parameters
+        ----------
+        docs : Iterable[dict]
+            Iterator / list of documents (each similar to single index input).
+
+        Returns
+        -------
+        dict
+            { 'success': int, 'errors': int }
+        """
+        # Materialize in a list (we need potential multiple passes / length)
+        docs_list: List[Dict[str, Any]] = list(docs)
+        if not docs_list:
+            return {"success": 0, "errors": 0}
+
+        if not self.connected or not self.es:
+            logger.error("bulk_index_documents: not connected; skipping (%d docs)", len(docs_list))
+            return {"success": 0, "errors": len(docs_list)}
+
+        try:  # Attempt fast path using helpers.bulk if available
+            try:  # Local import (keeps import cost off hot path if unused)
+                from elasticsearch import helpers as es_helpers  # type: ignore
+            except Exception:  # pragma: no cover - helpers import failure
+                es_helpers = None  # type: ignore
+
+            actions = []
+            now = datetime.now(timezone.utc).isoformat()
+            for original in docs_list:
+                doc = dict(original)
+                doc.setdefault("processed_at", now)
+                doc.setdefault("@timestamp", now)
+                if "content" in doc and "content_length" not in doc:
+                    try:
+                        doc["content_length"] = len(doc["content"])  # derive
+                    except Exception:
+                        pass
+                doc_id = doc.get("content_hash")
+                action = {
+                    "_op_type": "index",
+                    "_index": self.index_name,
+                    "_id": doc_id,
+                    "_source": doc,
                 }
-                self.es.indices.create(index=self.index_name, body=body)
-                logger.info("Created index '%s'", self.index_name)
-            else:
-                logger.debug("Index '%s' already exists", self.index_name)
-        except Exception as exc:
-            logger.error("Failed to create or verify index '%s': %s", self.index_name, exc)
-    
-    def get_index_mapping(self) -> Dict:
-        """Get index mapping for CTI data."""
+                actions.append(action)
+
+            if es_helpers is not None:
+                try:
+                    # stats_only -> returns (successes, errors)
+                    successes, errors = es_helpers.bulk(  # type: ignore
+                        self.es, actions, stats_only=True
+                    )
+                    if errors:
+                        logger.warning(
+                            "Bulk indexing completed with %d errors (success=%d)",
+                            errors,
+                            successes,
+                        )
+                    else:
+                        logger.debug(
+                            "Bulk indexing successful (count=%d)", successes
+                        )
+                    return {"success": int(successes), "errors": int(errors)}
+                except Exception as exc:  # pragma: no cover (helpers.bulk failure)
+                    logger.error(
+                        "helpers.bulk failed (%s); falling back to per-doc indexing",
+                        exc,
+                    )
+
+            # Fallback: per-document indexing
+            success = 0
+            errors = 0
+            for action in actions:
+                try:
+                    try:
+                        self.es.index(  # type: ignore
+                            index=action["_index"],
+                            id=action["_id"],
+                            document=action["_source"],
+                        )
+                    except TypeError:
+                        self.es.index(  # type: ignore
+                            index=action["_index"],
+                            id=action["_id"],
+                            body=action["_source"],
+                        )
+                    success += 1
+                except Exception as exc:
+                    errors += 1
+                    logger.error(
+                        "Bulk fallback: failed to index id=%s: %s",
+                        action.get("_id"),
+                        exc,
+                    )
+            return {"success": success, "errors": errors}
+        except Exception as outer_exc:  # pragma: no cover
+            logger.error("bulk_index_documents: unexpected failure: %s", outer_exc)
+            return {"success": 0, "errors": len(docs_list)}
+
+    def get_index_mapping(self) -> dict:
+        """
+        Defines the structure (schema) of 'cti_intelligence' index.
+        This tells Elasticsearch what kind of data to expect for each field.
+        """
         return {
             "properties": {
-                # Basic document fields
                 "url": {"type": "keyword"},
-                "title": {"type": "text", "analyzer": "cti_analyzer"},
-                "content": {"type": "text", "analyzer": "cti_analyzer"},
+                "title": {"type": "text"},
+                "content": {"type": "text"},
                 "content_hash": {"type": "keyword"},
                 "crawled_at": {"type": "date"},
                 "processed_at": {"type": "date"},
                 "site_category": {"type": "keyword"},
-                
-                # Metadata
                 "author": {"type": "keyword"},
-                "post_date": {"type": "date", "format": "strict_date_optional_time||epoch_millis||yyyy-MM-dd||dd/MM/yyyy"},
+                "post_date": {
+                    "type": "date",
+                    "format": "strict_date_optional_time||epoch_millis||yyyy-MM-dd||dd/MM/yyyy",
+                },
                 "thread_id": {"type": "keyword"},
                 "post_id": {"type": "keyword"},
                 "content_length": {"type": "integer"},
-                
-                # NLP processing results
                 "threat_score": {"type": "integer"},
-                "total_entities": {"type": "integer"},
-                "entity_types_count": {"type": "integer"},
-                
-                # IOCs (Indicators of Compromise)
                 "iocs": {
                     "properties": {
                         "ip_addresses": {"type": "ip"},
-                        "ipv6_addresses": {"type": "keyword"},
                         "domains": {"type": "keyword"},
                         "onion_domains": {"type": "keyword"},
                         "urls": {"type": "keyword"},
                         "emails": {"type": "keyword"},
-                        "md5_hashes": {"type": "keyword"},
-                        "sha1_hashes": {"type": "keyword"},
                         "sha256_hashes": {"type": "keyword"},
-                        "btc_addresses": {"type": "keyword"},
-                        "eth_addresses": {"type": "keyword"},
                         "cves": {"type": "keyword"},
-                        "executables": {"type": "keyword"},
-                        "registry_keys": {"type": "keyword"},
-                        "file_paths": {"type": "keyword"},
-                        "mutexes": {"type": "keyword"},
-                        "ports": {"type": "integer"}
                     }
                 },
-                
-                # Entities
-                "entities": {
-                    "type": "nested",
-                    "properties": {
-                        "text": {"type": "keyword"},
-                        "label": {"type": "keyword"},
-                        "start": {"type": "integer"},
-                        "end": {"type": "integer"},
-                        "confidence": {"type": "float"}
-                    }
-                },
-                
-                # Threat intelligence
                 "malware_families": {"type": "keyword"},
                 "threat_actors": {"type": "keyword"},
-                "attack_techniques": {"type": "keyword"},
-                
-                # Links and references
-                "internal_links": {
-                    "type": "nested",
-                    "properties": {
-                        "url": {"type": "keyword"},
-                        "text": {"type": "text"}
-                    }
-                },
-                
-                # Geolocation (if available)
                 "geo_location": {
                     "properties": {
                         "country": {"type": "keyword"},
                         "region": {"type": "keyword"},
                         "city": {"type": "keyword"},
-                        "coordinates": {"type": "geo_point"}
+                        "coordinates": {"type": "geo_point"},
                     }
                 },
-                
-                # Tags and classification
-                "tags": {"type": "keyword"},
-                "classification": {"type": "keyword"},
-                "severity": {"type": "keyword"},
-                
-                # Raw data reference
-                "raw_data_file": {"type": "keyword"}
+                "image_urls": {"type": "keyword"},
+                "breach_artifacts": {
+                    "type": "nested",
+                    "properties": {
+                        "hash_type": {"type": "keyword"},
+                        "hash_value": {"type": "keyword"},
+                    },
+                },
             }
         }
-    
-    @connection_required
-    def index_document(self, doc_data: Dict[str, Any]) -> bool:
-        """
-        Index a single document.
-        
-        Args:
-            doc_data: Document data to index
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            doc_data["processed_at"] = datetime.now().isoformat()
-            doc_id = doc_data.get("content_hash")
 
-            # Build kwargs to avoid sending id=None
-            kwargs: Dict[str, Any] = {"index": self.index_name, "body": doc_data}
-            if doc_id:
-                kwargs["id"] = doc_id
+    # Convenience maintenance operations
+    def refresh_index(self) -> bool:
+        """Best-effort refresh of the target index so newly indexed docs
+        become searchable immediately.
 
-            response = self.es.index(**kwargs)
-            logger.debug(
-                "Indexed document%s: %s result=%s",
-                f" id={doc_id}" if doc_id else "",
-                doc_data.get("url", "<no-url>"),
-                response.get("result"),
-            )
-            return True
-        except Exception as exc:
-            logger.error("Failed to index document (hash=%s): %s", doc_data.get("content_hash"), exc)
+        Returns
+        -------
+        bool
+            True if a refresh call was attempted successfully, False otherwise.
+        """
+        if not self.connected or not self.es:
+            logger.debug("refresh_index: not connected; skipping")
             return False
-    
-    @connection_required
-    def bulk_index_documents(self, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Bulk index multiple documents.
-        
-        Args:
-            documents: List of documents to index
-            
-        Returns:
-            Dictionary with success and error counts
-        """
-        if not documents:
-            return {"success": 0, "errors": 0, "error_details": []}
-
         try:
-            actions = []
-            for doc in documents:
-                doc["processed_at"] = datetime.now().isoformat()
-                doc_id = doc.get("content_hash")
-                action: Dict[str, Any] = {"_index": self.index_name, "_source": doc}
-                if doc_id:
-                    action["_id"] = doc_id
-                actions.append(action)
-
-            success_count, errors = bulk(
-                self.es, actions, chunk_size=100, request_timeout=60, raise_on_error=False
-            )
-            error_count = len(errors) if errors else 0
-            logger.info(
-                "Bulk indexed: %d success, %d errors (requested %d)",
-                success_count,
-                error_count,
-                len(documents),
-            )
-            return {"success": success_count, "errors": error_count, "error_details": errors or []}
-        except Exception as exc:
-            logger.error("Failed to bulk index documents: %s", exc)
-            return {"success": 0, "errors": len(documents), "error_details": [str(exc)]}
-    
-    @connection_required
-    def search_documents(self, query: Dict[str, Any], size: int = 10) -> Dict[str, Any]:
-        """
-        Search documents in the index.
-        
-        Args:
-            query: Elasticsearch query
-            size: Number of results to return
-            
-        Returns:
-            Search results
-        """
-        try:
-            response = self.es.search(index=self.index_name, body=query, size=size)
-            return response
-        except Exception as exc:
-            logger.error("Search failed: %s", exc)
-            return {"hits": {"total": {"value": 0}, "hits": []}}
-    
-    @connection_required
-    def search_by_ioc(self, ioc_type: str, ioc_value: str) -> List[Dict[str, Any]]:
-        """
-        Search documents by IOC.
-        
-        Args:
-            ioc_type: Type of IOC (e.g., 'ip_addresses', 'domains')
-            ioc_value: IOC value to search for
-            
-        Returns:
-            List of matching documents
-        """
-        query = {
-            "query": {
-                "term": {
-                    f"iocs.{ioc_type}": ioc_value
-                }
-            }
-        }
-        
-        response = self.search_documents(query, size=100)
-        return [hit.get("_source", {}) for hit in response.get("hits", {}).get("hits", [])]
-    
-    @connection_required
-    def search_by_threat_actor(self, actor_name: str) -> List[Dict[str, Any]]:
-        """Search documents mentioning a specific threat actor."""
-        query = {
-            "query": {
-                "bool": {
-                    "should": [
-                        {"term": {"threat_actors": actor_name}},
-                        {"match": {"content": actor_name}}
-                    ]
-                }
-            }
-        }
-        
-        response = self.search_documents(query, size=100)
-        return [hit.get("_source", {}) for hit in response.get("hits", {}).get("hits", [])]
-    
-    @connection_required
-    def search_by_malware_family(self, malware_name: str) -> List[Dict[str, Any]]:
-        """Search documents mentioning a specific malware family."""
-        query = {
-            "query": {
-                "bool": {
-                    "should": [
-                        {"term": {"malware_families": malware_name}},
-                        {"match": {"content": malware_name}}
-                    ]
-                }
-            }
-        }
-        
-        response = self.search_documents(query, size=100)
-        return [hit.get("_source", {}) for hit in response.get("hits", {}).get("hits", [])]
-    
-    @connection_required
-    def get_threat_statistics(self) -> Dict[str, Any]:
-        """Get threat intelligence statistics."""
-        try:
-            # Aggregation query for statistics
-            query = {
-                "size": 0,
-                "aggs": {
-                    "total_documents": {"value_count": {"field": "content_hash"}},
-                    "avg_threat_score": {"avg": {"field": "threat_score"}},
-                    "site_categories": {"terms": {"field": "site_category"}},
-                    "top_malware_families": {"terms": {"field": "malware_families", "size": 10}},
-                    "top_threat_actors": {"terms": {"field": "threat_actors", "size": 10}},
-                    "documents_by_date": {
-                        "date_histogram": {
-                            "field": "crawled_at",
-                            "calendar_interval": "day"
-                        }
-                    }
-                }
-            }
-            
-            response = self.es.search(index=self.index_name, body=query)
-            aggs = response.get("aggregations", {})
-            return {
-                "total_documents": aggs.get("total_documents", {}).get("value", 0),
-                "avg_threat_score": aggs.get("avg_threat_score", {}).get("value"),
-                "site_categories": aggs.get("site_categories", {}).get("buckets", []),
-                "top_malware_families": aggs.get("top_malware_families", {}).get("buckets", []),
-                "top_threat_actors": aggs.get("top_threat_actors", {}).get("buckets", []),
-                "documents_by_date": aggs.get("documents_by_date", {}).get("buckets", []),
-            }
-        except Exception as exc:
-            logger.error("Failed to get statistics: %s", exc)
-            return {}
-    
-    @connection_required
-    def delete_old_documents(self, days_old: int = 30) -> int:
-        """Delete documents older than specified days."""
-        try:
-            query = {
-                "query": {
-                    "range": {
-                        "crawled_at": {
-                            "lt": f"now-{days_old}d"
-                        }
-                    }
-                }
-            }
-            
-            response = self.es.delete_by_query(index=self.index_name, body=query)
-            deleted_count = response.get("deleted", 0)
-            logger.info("Deleted %d documents older than %d days", deleted_count, days_old)
-            return deleted_count
-        except Exception as exc:
-            logger.error("Failed to delete old documents: %s", exc)
-            return 0
+            refresh_fn = getattr(self.es, "indices", None)
+            if refresh_fn is None:
+                logger.debug("refresh_index: client has no 'indices' attribute (mock?)")
+                return False
+            refresh_method = getattr(refresh_fn, "refresh", None)
+            if callable(refresh_method):
+                refresh_method(index=self.index_name)
+                logger.debug("Refreshed index '%s'", self.index_name)
+                return True
+            logger.debug("refresh_index: no callable refresh method on indices object")
+            return False
+        except Exception as exc:  # pragma: no cover (network errors)
+            logger.error("Failed to refresh index '%s': %s", self.index_name, exc)
+            return False
