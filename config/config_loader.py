@@ -19,8 +19,12 @@ class Config:
         self.BASE_DIR = Path(__file__).resolve().parent.parent
         config_dir = self.BASE_DIR / 'config'
 
-        # Load crawler config
-        with open(config_dir / 'crawler_config.yaml', 'r', encoding='utf-8') as f:
+        # Load crawler config with local override support:
+        # If 'crawler_config.local.yaml' exists (git-ignored) use it, else fallback to public 'crawler_config.yaml'.
+        crawler_public = config_dir / 'crawler_config.yaml'
+        crawler_local = config_dir / 'crawler_config.local.yaml'
+        crawler_path = crawler_local if crawler_local.exists() else crawler_public
+        with open(crawler_path, 'r', encoding='utf-8') as f:
             self.crawler = yaml.safe_load(f)
 
         # Load elastic config
