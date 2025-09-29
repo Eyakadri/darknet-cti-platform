@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
-"""
-Main crawler runner script.
+"""Small helper to launch the Scrapy crawler with the right project root.
+
+Why not just call 'scrapy crawl darknet'? This script:
+    * Ensures the repo root is on sys.path (local editable install not required)
+    * Loads .env if present (API keys, etc.)
+    * Uses the same interpreter (virtualenv) that invoked it
+Keeps ops friction low when running manually or from cron/systemd.
 """
 
 import os
@@ -21,9 +26,9 @@ try:
 except Exception:
     pass
 
-from config.config_loader import config
+from config.config_loader import config  # central settings (log level, etc.)
 
-# Setup logging
+# Minimal logging setup (file + level pulled from loaded config)
 logging.basicConfig(
     level=config.LOG_LEVEL,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -33,7 +38,10 @@ logging.basicConfig(
 
 
 def run_crawler():
-    """Run the Scrapy crawler."""
+    """Kick off the crawler process and bubble up its exit code.
+
+    Returns int exit code so callers (other scripts / CI) can act on success/failure.
+    """
     try:
         # Determine actual Scrapy project directory (adjusted to current repo layout)
     # (paths already set globally, keep local vars for clarity if needed)
@@ -42,9 +50,8 @@ def run_crawler():
             raise FileNotFoundError(f"Scrapy project directory not found at {scrapy_dir}")
         os.chdir(scrapy_dir)
         
-        # Run scrapy spider
-        # Spider name comes from DarknetSpider.name in spiders/darknet_spider.py
-        # Use the current python interpreter to ensure correct environment
+    # Build command; spider name taken from DarknetSpider.name
+    # Use current interpreter to avoid PATH / multiple Python confusion
         cmd = [sys.executable, '-m', 'scrapy', 'crawl', 'darknet', '-L', 'INFO']
         
         print("Starting CTI crawler...")
@@ -65,4 +72,5 @@ def run_crawler():
         return 1
 
 if __name__ == '__main__':
+    # Allow direct execution
     sys.exit(run_crawler())
