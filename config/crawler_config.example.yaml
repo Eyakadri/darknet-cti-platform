@@ -1,5 +1,4 @@
 # Public example crawler configuration (sanitized)
-# Copy to crawler_config.local.yaml and fill in real target_sites.
 
 tor:
   proxy_host: 127.0.0.1
